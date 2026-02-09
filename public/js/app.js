@@ -1,0 +1,1554 @@
+/**
+ * GPU Orchestrator - Main Application
+ */
+
+class GPUOrchestrator {
+  constructor() {
+    this.ws = null;
+    this.connected = false;
+    this.pods = [];
+    this.endpoints = [];
+    this.jobs = [];
+    this.gpus = [];
+    this.benchmarks = [];
+    this.activity = [];
+
+    this.init();
+  }
+
+  // ==================== Initialization ====================
+  async init() {
+    this.setupWebSocket();
+    this.setupNavigation();
+    this.setupEventListeners();
+
+    // Initial data load
+    await this.refreshAll();
+
+    // Periodic refresh
+    setInterval(() => this.refreshAll(), 30000);
+  }
+
+  setupWebSocket() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+
+    this.ws = new WebSocket(wsUrl);
+
+    this.ws.onopen = () => {
+      this.connected = true;
+      this.updateConnectionStatus('connected');
+      this.addActivity('🔌', 'Connected to server');
+    };
+
+    this.ws.onclose = () => {
+      this.connected = false;
+      this.updateConnectionStatus('disconnected');
+      // Reconnect after 3 seconds
+      setTimeout(() => this.setupWebSocket(), 3000);
+    };
+
+    this.ws.onerror = () => {
+      this.updateConnectionStatus('disconnected');
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        this.handleWebSocketMessage(data);
+      } catch (e) {
+        console.error('WebSocket message parse error:', e);
+      }
+    };
+
+    // Keepalive
+    setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 30000);
+  }
+
+  handleWebSocketMessage(data) {
+    const { event, data: eventData } = data;
+
+    switch (event) {
+      case 'job:created':
+        this.addActivity('📝', `Job created: ${eventData.id.slice(0, 8)}...`);
+        this.loadJobs();
+        break;
+      case 'job:running':
+        this.addActivity('▶️', `Job started: ${eventData.id.slice(0, 8)}...`);
+        this.loadJobs();
+        break;
+      case 'job:completed':
+        this.addActivity('✅', `Job completed: ${eventData.id.slice(0, 8)}...`);
+        this.showToast('Job Completed', 'A job has finished successfully', 'success');
+        this.loadJobs();
+        break;
+      case 'job:failed':
+        this.addActivity('❌', `Job failed: ${eventData.id.slice(0, 8)}...`);
+        this.showToast('Job Failed', eventData.error || 'Unknown error', 'error');
+        this.loadJobs();
+        break;
+      case 'pod:auto-stopped':
+        this.addActivity('⏰', `Auto-stopped: ${eventData.podName}`);
+        this.showToast('Pod Auto-Stopped', `${eventData.podName} was stopped due to inactivity`, 'warning');
+        this.loadPods();
+        break;
+    }
+  }
+
+  updateConnectionStatus(status) {
+    const statusEl = document.getElementById('connectionStatus');
+    const dot = statusEl.querySelector('.status-dot');
+    const text = statusEl.querySelector('.status-text');
+
+    dot.className = `status-dot ${status}`;
+    text.textContent = status === 'connected' ? 'Connected' :
+      status === 'disconnected' ? 'Disconnected' : 'Connecting...';
+  }
+
+  setupNavigation() {
+    const tabs = document.querySelectorAll('.nav-tab');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabId = tab.dataset.tab;
+        this.switchTab(tabId);
+      });
+    });
+  }
+
+  switchTab(tabId) {
+    // Update nav tabs
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+
+    // Update content
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.getElementById(`tab-${tabId}`).classList.add('active');
+  }
+
+  setupEventListeners() {
+    // Benchmark tier tabs
+    document.querySelectorAll('.bench-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.bench-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        this.filterBenchmarks(tab.dataset.tier);
+      });
+    });
+
+    // Auto-shutdown toggle
+    document.getElementById('autoShutdownToggle')?.addEventListener('change', (e) => {
+      this.toggleAutoShutdown(e.target.checked);
+    });
+  }
+
+  // ==================== API Calls ====================
+  async api(method, path, body = null) {
+    const options = {
+      method,
+      headers: { 'Content-Type': 'application/json' }
+    };
+
+    if (body) {
+      options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(`/api${path}`, options);
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || data.errors?.join(', ') || 'Request failed');
+    }
+
+    return data;
+  }
+
+  // ==================== Refresh All Data ====================
+  async refreshAll() {
+    try {
+      await Promise.all([
+        this.loadAccount(),
+        this.loadPods(),
+        this.loadEndpoints(),
+        this.loadJobs(),
+        this.loadCosts(),
+        this.loadBenchmarks(),
+        this.loadAutoShutdownStatus()
+      ]);
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+    }
+  }
+
+  // ==================== Account ====================
+  async loadAccount() {
+    try {
+      const account = await this.api('GET', '/account');
+      document.getElementById('balanceDisplay').querySelector('.balance-value').textContent =
+        `$${(account.clientBalance || 0).toFixed(2)}`;
+    } catch (error) {
+      console.error('Error loading account:', error);
+    }
+  }
+
+  // ==================== Pods ====================
+  async loadPods() {
+    try {
+      this.pods = await this.api('GET', '/pods');
+      this.renderPods();
+      this.updateStats();
+    } catch (error) {
+      console.error('Error loading pods:', error);
+      document.getElementById('podsGrid').innerHTML =
+        `<div class="empty-state"><div class="empty-state-icon">⚠️</div><p>Error loading pods</p></div>`;
+    }
+  }
+
+  renderPods() {
+    const grid = document.getElementById('podsGrid');
+
+    if (this.pods.length === 0) {
+      grid.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">🖥️</div>
+          <p class="empty-state-text">No pods running</p>
+          <button class="btn primary" onclick="app.showCreatePodModal()">Create First Pod</button>
+        </div>
+      `;
+      return;
+    }
+
+    grid.innerHTML = this.pods.map(pod => `
+      <div class="resource-card">
+        <div class="resource-header">
+          <div class="resource-name">${this.escapeHtml(pod.name)}</div>
+          <span class="resource-status ${this.getStatusClass(pod.desiredStatus)}">
+            ${pod.desiredStatus}
+          </span>
+        </div>
+        <div class="resource-details">
+          <div class="resource-detail">
+            <span class="resource-detail-label">GPU</span>
+            <span class="resource-detail-value">${pod.machine?.gpuDisplayName || 'N/A'}</span>
+          </div>
+          <div class="resource-detail">
+            <span class="resource-detail-label">Cost/hr</span>
+            <span class="resource-detail-value">$${(pod.costPerHr || 0).toFixed(3)}</span>
+          </div>
+          <div class="resource-detail">
+            <span class="resource-detail-label">Memory</span>
+            <span class="resource-detail-value">${pod.memoryInGb || 0} GB</span>
+          </div>
+          <div class="resource-detail">
+            <span class="resource-detail-label">Uptime</span>
+            <span class="resource-detail-value">${this.formatDuration(pod.uptimeSeconds)}</span>
+          </div>
+        </div>
+        <div class="resource-actions">
+          ${pod.desiredStatus === 'RUNNING' ?
+        `<button class="btn sm warning" onclick="app.stopPod('${pod.id}')">⏹️ Stop</button>` :
+        `<button class="btn sm primary" onclick="app.startPod('${pod.id}')">▶️ Start</button>`
+      }
+          <button class="btn sm danger" onclick="app.terminatePod('${pod.id}')">🗑️ Delete</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async stopPod(podId) {
+    if (!confirm('Are you sure you want to stop this pod?')) return;
+
+    try {
+      await this.api('POST', `/pods/${podId}/stop`);
+      this.showToast('Pod Stopped', 'Pod is now stopping', 'success');
+      await this.loadPods();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  async startPod(podId) {
+    try {
+      await this.api('POST', `/pods/${podId}/start`);
+      this.showToast('Pod Starting', 'Pod is now starting up', 'success');
+      await this.loadPods();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  async terminatePod(podId) {
+    if (!confirm('Are you sure you want to DELETE this pod? This action cannot be undone!')) return;
+
+    try {
+      await this.api('DELETE', `/pods/${podId}`);
+      this.showToast('Pod Deleted', 'Pod has been terminated', 'success');
+      await this.loadPods();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  async stopAllPods() {
+    const runningPods = this.pods.filter(p => p.desiredStatus === 'RUNNING');
+    if (runningPods.length === 0) {
+      this.showToast('No Running Pods', 'There are no pods to stop', 'info');
+      return;
+    }
+
+    if (!confirm(`Stop all ${runningPods.length} running pod(s)?`)) return;
+
+    try {
+      await Promise.all(runningPods.map(p => this.api('POST', `/pods/${p.id}/stop`)));
+      this.showToast('All Pods Stopped', `Stopped ${runningPods.length} pod(s)`, 'success');
+      await this.loadPods();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  // ==================== Create Pod Modal ====================
+  // Built-in templates configuration
+  builtInTemplates = {
+    imageGen: {
+      id: 'image-gen-comfyui',
+      name: 'Image Gen (ComfyUI SDXL)',
+      templateId: null, // Uses docker image directly
+      imageName: 'hearmeman/comfyui-sdxl-template:v7',
+      port: 8188,
+      minVram: 8,
+      icon: '🎨',
+      description: 'Stable Diffusion XL con ComfyUI para generación de imágenes',
+      defaultVolume: 20,
+      defaultContainerDisk: 10
+    },
+    musicGen: {
+      id: 'music-gen-heartmula',
+      name: 'Music Gen (HeartMuLa Studio)',
+      templateId: 'yxf2jxp1lu',
+      imageName: null, // Uses template ID
+      port: 7860,
+      minVram: 16,
+      icon: '🎵',
+      description: 'Generación de música con IA - Requiere mínimo 16GB VRAM',
+      defaultVolume: 50,
+      defaultContainerDisk: 30,
+      minVolume: 50,
+      minContainerDisk: 30
+    }
+  };
+
+  selectedTaskType = 'imageGen';
+
+  async showCreatePodModal() {
+    // Load GPUs if not loaded
+    if (this.gpus.length === 0) {
+      try {
+        this.gpus = await this.api('GET', '/gpus');
+      } catch (error) {
+        this.showToast('Error', 'Failed to load GPU types', 'error');
+        return;
+      }
+    }
+
+    const modalBody = document.getElementById('modalBody');
+    modalBody.innerHTML = `
+      <form class="modal-form" onsubmit="app.createPod(event)">
+        <!-- Task Type Selection -->
+        <div class="form-group">
+          <label>Tipo de Tarea *</label>
+          <div class="task-type-selector">
+            <div class="task-type-option active" data-type="imageGen" onclick="app.selectTaskType('imageGen')">
+              <div class="task-type-icon">🎨</div>
+              <div class="task-type-info">
+                <div class="task-type-name">Image Gen</div>
+                <div class="task-type-desc">ComfyUI SDXL</div>
+              </div>
+            </div>
+            <div class="task-type-option" data-type="musicGen" onclick="app.selectTaskType('musicGen')">
+              <div class="task-type-icon">🎵</div>
+              <div class="task-type-info">
+                <div class="task-type-name">Music Gen</div>
+                <div class="task-type-desc">HeartMuLa Studio</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="taskTypeInfo" class="info-box">
+          <strong>🎨 Image Gen:</strong> Generación de imágenes con Stable Diffusion XL y ComfyUI. 
+          Funciona con GPUs de 8GB+.
+        </div>
+
+        <div class="form-group">
+          <label for="podName">Nombre del Pod *</label>
+          <input type="text" id="podName" required placeholder="mi-pod-ia" pattern="[a-zA-Z0-9-_]+" minlength="3" maxlength="50">
+        </div>
+        
+        <div class="form-group">
+          <label for="cloudType">Tipo de Cloud *</label>
+          <select id="cloudType">
+            <option value="COMMUNITY">🌐 Community Cloud (Más barato)</option>
+            <option value="SECURE">🔒 Secure Cloud (Más fiable)</option>
+            <option value="ALL" selected>🔄 Cualquier disponible</option>
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label for="gpuType">GPU Type * <span id="gpuCount"></span></label>
+          <select id="gpuType" required>
+            <!-- GPUs will be populated dynamically -->
+          </select>
+          <div id="gpuWarning" class="warning-text" style="display: none;">
+            ⚠️ Music Gen requiere mínimo 16GB VRAM
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label for="volumeSize">Volumen (GB) - Almacenamiento persistente</label>
+          <input type="number" id="volumeSize" value="20" min="0" max="1000">
+        </div>
+        
+        <div class="form-group">
+          <label for="containerDisk">Container Disk (GB) - Pon 0 para ninguno</label>
+          <input type="number" id="containerDisk" value="10" min="0" max="500">
+          <small style="color: var(--text-muted);">Almacenamiento temporal, se borra al reiniciar.</small>
+        </div>
+
+        <!-- Spending Limit -->
+        <div class="form-group spending-limit-group">
+          <label for="spendingLimit">
+            💰 Límite de Gasto ($) 
+            <span class="recommended-badge">⭐ Recomendado</span>
+          </label>
+          <input type="number" id="spendingLimit" value="1" min="0.1" max="100" step="0.1">
+          <div class="limit-info-box">
+            <span class="limit-icon">🛡️</span>
+            <div class="limit-text">
+              <strong>Protección anti-olvido:</strong> Si el pod gasta más de este límite, 
+              se detendrá y eliminará automáticamente. ¡No más sustos en la factura!
+            </div>
+          </div>
+          <small style="color: var(--text-muted);">Pon 0 para desactivar (no recomendado).</small>
+        </div>
+        
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="app.closeModal()">Cancelar</button>
+          <button type="submit" class="btn primary" id="createPodBtn">Crear Pod</button>
+        </div>
+      </form>
+    `;
+
+    // Set initial task type and populate GPUs
+    this.selectedTaskType = 'imageGen';
+    this.updateGpuOptionsForTaskType();
+    this.updateDiskDefaultsForTaskType();
+
+    document.getElementById('modalTitle').textContent = 'Crear Nuevo Pod';
+    document.getElementById('modalOverlay').classList.add('active');
+  }
+
+  selectTaskType(type) {
+    this.selectedTaskType = type;
+    const template = this.builtInTemplates[type];
+
+    // Update UI selection
+    document.querySelectorAll('.task-type-option').forEach(opt => {
+      opt.classList.toggle('active', opt.dataset.type === type);
+    });
+
+    // Update info box
+    const infoBox = document.getElementById('taskTypeInfo');
+    if (type === 'imageGen') {
+      infoBox.className = 'info-box';
+      infoBox.innerHTML = `
+        <strong>🎨 Image Gen:</strong> Generación de imágenes con Stable Diffusion XL y ComfyUI. 
+        Funciona con GPUs de 8GB+.
+      `;
+    } else {
+      infoBox.className = 'info-box warning';
+      infoBox.innerHTML = `
+        <strong>🎵 Music Gen:</strong> Generación de música con HeartMuLa Studio. 
+        <strong>⚠️ Requiere mínimo 16GB VRAM</strong> (RTX 4090, A100, etc.)
+      `;
+    }
+
+    // Update GPU options and disk defaults
+    this.updateGpuOptionsForTaskType();
+    this.updateDiskDefaultsForTaskType();
+  }
+
+  updateDiskDefaultsForTaskType() {
+    const template = this.builtInTemplates[this.selectedTaskType];
+    const volumeInput = document.getElementById('volumeSize');
+    const containerInput = document.getElementById('containerDisk');
+
+    // Set default values
+    volumeInput.value = template.defaultVolume;
+    containerInput.value = template.defaultContainerDisk;
+
+    // Show/hide disk warning for music gen
+    let diskWarning = document.getElementById('diskWarning');
+
+    if (this.selectedTaskType === 'musicGen') {
+      if (!diskWarning) {
+        // Create warning element
+        diskWarning = document.createElement('div');
+        diskWarning.id = 'diskWarning';
+        diskWarning.className = 'disk-warning-box';
+        diskWarning.innerHTML = `
+          <span class="disk-warning-icon">💾</span>
+          <div class="disk-warning-text">
+            <strong>Espacio recomendado para Music Gen:</strong><br>
+            Volume: mínimo 50GB | Container: mínimo 30GB<br>
+            <em>Menos espacio puede causar errores de instalación.</em>
+          </div>
+        `;
+        containerInput.parentElement.after(diskWarning);
+      }
+      diskWarning.style.display = 'flex';
+
+      // Set minimum values
+      volumeInput.min = template.minVolume;
+      containerInput.min = template.minContainerDisk;
+    } else {
+      if (diskWarning) {
+        diskWarning.style.display = 'none';
+      }
+      volumeInput.min = 0;
+      containerInput.min = 0;
+    }
+  }
+
+  updateGpuOptionsForTaskType() {
+    const template = this.builtInTemplates[this.selectedTaskType];
+    const minVram = template.minVram;
+
+    // Popular GPUs in order
+    const popularGpuIds = [
+      'NVIDIA GeForce RTX 4090',
+      'NVIDIA GeForce RTX 3090',
+      'NVIDIA RTX A5000',
+      'NVIDIA RTX A4000',
+      'NVIDIA GeForce RTX 4080',
+      'NVIDIA GeForce RTX 3080',
+      'NVIDIA RTX A6000',
+      'NVIDIA L4',
+      'NVIDIA A100 80GB PCIe',
+      'NVIDIA A100-SXM4-80GB'
+    ];
+
+    // Filter GPUs by availability and VRAM requirement
+    let availableGpus = this.gpus
+      .filter(g => (g.communityCloud || g.secureCloud) && g.displayName)
+      .filter(g => (g.memoryInGb || 0) >= minVram)
+      .sort((a, b) => {
+        const aPopular = popularGpuIds.indexOf(a.id);
+        const bPopular = popularGpuIds.indexOf(b.id);
+        if (aPopular !== -1 && bPopular === -1) return -1;
+        if (aPopular === -1 && bPopular !== -1) return 1;
+        if (aPopular !== -1 && bPopular !== -1) return aPopular - bPopular;
+        return (a.communityPrice || a.securePrice || 0) - (b.communityPrice || b.securePrice || 0);
+      });
+
+    const gpuSelect = document.getElementById('gpuType');
+    const gpuCount = document.getElementById('gpuCount');
+    const gpuWarning = document.getElementById('gpuWarning');
+
+    gpuCount.textContent = `(${availableGpus.length} disponibles)`;
+
+    // Show warning for music gen
+    gpuWarning.style.display = this.selectedTaskType === 'musicGen' ? 'block' : 'none';
+
+    gpuSelect.innerHTML = availableGpus.map(g => {
+      const price = (g.communityPrice || g.securePrice || 0).toFixed(3);
+      const cloud = g.communityCloud ? '🌐' : '🔒';
+      const vram = g.memoryInGb || '?';
+      const recommended = vram >= 24 ? '⭐ ' : '';
+      return `<option value="${g.id}">${recommended}${cloud} ${g.displayName || g.id} (${vram}GB) - $${price}/hr</option>`;
+    }).join('');
+
+    if (availableGpus.length === 0) {
+      gpuSelect.innerHTML = '<option value="">No hay GPUs disponibles con suficiente VRAM</option>';
+    }
+  }
+
+  onTemplateSelect(imageName) {
+    // No longer used - task type selector handles templates
+  }
+
+  async createPod(event) {
+    event.preventDefault();
+
+    const containerDisk = parseInt(document.getElementById('containerDisk').value);
+    const spendingLimit = parseFloat(document.getElementById('spendingLimit').value) || 0;
+    const template = this.builtInTemplates[this.selectedTaskType];
+
+    const data = {
+      name: document.getElementById('podName').value,
+      gpuTypeId: document.getElementById('gpuType').value,
+      volumeInGb: parseInt(document.getElementById('volumeSize').value) || 0,
+      containerDiskInGb: containerDisk > 0 ? containerDisk : null,
+      cloudType: document.getElementById('cloudType').value,
+      taskType: this.selectedTaskType,
+      port: template.port,
+      spendingLimit: spendingLimit > 0 ? spendingLimit : null
+    };
+
+    // Use template ID or docker image based on task type
+    if (template.templateId) {
+      data.templateId = template.templateId;
+    } else {
+      data.imageName = template.imageName;
+    }
+
+    try {
+      await this.api('POST', '/pods', data);
+      const limitMsg = spendingLimit > 0 ? ` (límite: $${spendingLimit})` : '';
+      this.showToast('Pod Creado', `Tu pod de ${template.name} se está desplegando${limitMsg}`, 'success');
+      this.closeModal();
+      await this.loadPods();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  // ==================== Endpoints ====================
+  async loadEndpoints() {
+    try {
+      this.endpoints = await this.api('GET', '/endpoints');
+      this.renderEndpoints();
+      this.updateStats();
+    } catch (error) {
+      console.error('Error loading endpoints:', error);
+    }
+  }
+
+  renderEndpoints() {
+    const grid = document.getElementById('endpointsGrid');
+
+    if (this.endpoints.length === 0) {
+      grid.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">☁️</div>
+          <p class="empty-state-text">No serverless endpoints</p>
+          <button class="btn primary" onclick="app.showCreateEndpointModal()">Create First Endpoint</button>
+        </div>
+      `;
+      return;
+    }
+
+    grid.innerHTML = this.endpoints.map(ep => `
+      <div class="resource-card">
+        <div class="resource-header">
+          <div class="resource-name">${this.escapeHtml(ep.name)}</div>
+          <span class="resource-status running">ACTIVE</span>
+        </div>
+        <div class="resource-details">
+          <div class="resource-detail">
+            <span class="resource-detail-label">Workers</span>
+            <span class="resource-detail-value">${ep.workersMin} - ${ep.workersMax}</span>
+          </div>
+          <div class="resource-detail">
+            <span class="resource-detail-label">Idle Timeout</span>
+            <span class="resource-detail-value">${ep.idleTimeout}s</span>
+          </div>
+        </div>
+        <div class="resource-actions">
+          <button class="btn sm primary" onclick="app.showSubmitJobModal('${ep.id}')">📤 Submit Job</button>
+          <button class="btn sm danger" onclick="app.deleteEndpoint('${ep.id}')">🗑️ Delete</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async deleteEndpoint(endpointId) {
+    if (!confirm('Delete this endpoint?')) return;
+
+    try {
+      await this.api('DELETE', `/endpoints/${endpointId}`);
+      this.showToast('Endpoint Deleted', 'Serverless endpoint has been removed', 'success');
+      await this.loadEndpoints();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  showCreateEndpointModal() {
+    const modalBody = document.getElementById('modalBody');
+    modalBody.innerHTML = `
+      <div class="info-box">
+        <strong>Note:</strong> Creating serverless endpoints requires a pre-built template in RunPod. 
+        You can create templates from the RunPod console.
+      </div>
+      <form class="modal-form" onsubmit="app.createEndpoint(event)">
+        <div class="form-group">
+          <label for="endpointName">Endpoint Name *</label>
+          <input type="text" id="endpointName" required placeholder="my-sd-endpoint">
+        </div>
+        
+        <div class="form-group">
+          <label for="templateId">Template ID *</label>
+          <input type="text" id="templateId" required placeholder="abc123def456">
+        </div>
+        
+        <div class="form-group">
+          <label for="gpuIds">GPU IDs (comma-separated)</label>
+          <input type="text" id="gpuIds" placeholder="NVIDIA GeForce RTX 4090">
+        </div>
+        
+        <div class="form-group">
+          <label for="workersMin">Min Workers</label>
+          <input type="number" id="workersMin" value="0" min="0" max="10">
+        </div>
+        
+        <div class="form-group">
+          <label for="workersMax">Max Workers</label>
+          <input type="number" id="workersMax" value="3" min="1" max="100">
+        </div>
+        
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="app.closeModal()">Cancel</button>
+          <button type="submit" class="btn primary">Create Endpoint</button>
+        </div>
+      </form>
+    `;
+
+    document.getElementById('modalTitle').textContent = 'Create Serverless Endpoint';
+    document.getElementById('modalOverlay').classList.add('active');
+  }
+
+  async createEndpoint(event) {
+    event.preventDefault();
+
+    const gpuIdsStr = document.getElementById('gpuIds').value;
+    const gpuIds = gpuIdsStr ? gpuIdsStr.split(',').map(s => s.trim()) : [];
+
+    const data = {
+      name: document.getElementById('endpointName').value,
+      templateId: document.getElementById('templateId').value,
+      gpuIds,
+      workersMin: parseInt(document.getElementById('workersMin').value) || 0,
+      workersMax: parseInt(document.getElementById('workersMax').value) || 3
+    };
+
+    try {
+      await this.api('POST', '/endpoints', data);
+      this.showToast('Endpoint Created', 'Your serverless endpoint is ready', 'success');
+      this.closeModal();
+      await this.loadEndpoints();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  // ==================== Jobs ====================
+  async loadJobs() {
+    try {
+      const status = document.getElementById('jobStatusFilter')?.value || '';
+      const path = status ? `/jobs?status=${status}` : '/jobs';
+      this.jobs = await this.api('GET', path);
+      this.renderJobs();
+      this.updateJobStats();
+    } catch (error) {
+      console.error('Error loading jobs:', error);
+    }
+  }
+
+  filterJobs() {
+    this.loadJobs();
+  }
+
+  renderJobs() {
+    const tbody = document.getElementById('jobsTableBody');
+
+    if (this.jobs.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="loading-cell">No jobs found</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = this.jobs.map(job => `
+      <tr>
+        <td title="${job.id}">${job.id.slice(0, 8)}...</td>
+        <td><span class="job-status ${job.status.toLowerCase()}">${job.status}</span></td>
+        <td>${job.endpoint_id ? job.endpoint_id.slice(0, 8) + '...' : 'N/A'}</td>
+        <td>${job.duration_ms ? this.formatDuration(job.duration_ms / 1000) : '-'}</td>
+        <td>${job.cost_usd ? '$' + job.cost_usd.toFixed(4) : '-'}</td>
+        <td>${this.formatDate(job.created_at)}</td>
+        <td>
+          ${job.status === 'PENDING' || job.status === 'RUNNING' ?
+        `<button class="btn sm danger" onclick="app.cancelJob('${job.id}')">Cancel</button>` :
+        job.status === 'COMPLETED' ?
+          `<button class="btn sm" onclick="app.viewJobResult('${job.id}')">View</button>` :
+          ''
+      }
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  updateJobStats() {
+    const stats = {
+      pending: this.jobs.filter(j => j.status === 'PENDING').length,
+      running: this.jobs.filter(j => j.status === 'RUNNING' || j.status === 'IN_QUEUE').length,
+      completed: this.jobs.filter(j => j.status === 'COMPLETED').length,
+      failed: this.jobs.filter(j => j.status === 'FAILED').length
+    };
+
+    document.getElementById('jobsPending').textContent = stats.pending;
+    document.getElementById('jobsRunning').textContent = stats.running;
+    document.getElementById('jobsCompleted').textContent = stats.completed;
+    document.getElementById('jobsFailed').textContent = stats.failed;
+    document.getElementById('queuedJobs').textContent = stats.pending + stats.running;
+  }
+
+  async cancelJob(jobId) {
+    try {
+      await this.api('POST', `/jobs/${jobId}/cancel`);
+      this.showToast('Job Cancelled', 'The job has been cancelled', 'success');
+      await this.loadJobs();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  viewJobResult(jobId) {
+    const job = this.jobs.find(j => j.id === jobId);
+    if (!job) return;
+
+    const modalBody = document.getElementById('modalBody');
+    modalBody.innerHTML = `
+      <div class="job-details">
+        <div class="form-group">
+          <label>Job ID</label>
+          <input type="text" readonly value="${job.id}">
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <span class="job-status ${job.status.toLowerCase()}">${job.status}</span>
+        </div>
+        <div class="form-group">
+          <label>Duration</label>
+          <span>${job.duration_ms ? this.formatDuration(job.duration_ms / 1000) : 'N/A'}</span>
+        </div>
+        <div class="form-group">
+          <label>Input</label>
+          <pre style="background: var(--bg-glass); padding: 1rem; border-radius: 8px; overflow: auto; max-height: 150px;">
+${JSON.stringify(job.input, null, 2)}
+          </pre>
+        </div>
+        <div class="form-group">
+          <label>Output</label>
+          <pre style="background: var(--bg-glass); padding: 1rem; border-radius: 8px; overflow: auto; max-height: 200px;">
+${JSON.stringify(job.output, null, 2)}
+          </pre>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('modalTitle').textContent = 'Job Details';
+    document.getElementById('modalOverlay').classList.add('active');
+  }
+
+  showCreateJobModal(endpointId = '') {
+    const modalBody = document.getElementById('modalBody');
+
+    const endpointOptions = this.endpoints.map(ep =>
+      `<option value="${ep.id}" ${ep.id === endpointId ? 'selected' : ''}>${this.escapeHtml(ep.name)}</option>`
+    ).join('');
+
+    modalBody.innerHTML = `
+      <form class="modal-form" onsubmit="app.submitJob(event)">
+        <div class="form-group">
+          <label for="jobEndpoint">Endpoint *</label>
+          <select id="jobEndpoint" required>
+            <option value="">Select an endpoint</option>
+            ${endpointOptions}
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label for="jobInput">Input JSON *</label>
+          <textarea id="jobInput" required rows="8" placeholder='{"prompt": "A beautiful sunset"}'>{
+  "prompt": "A beautiful sunset over the ocean"
+}</textarea>
+        </div>
+        
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="skipDedup"> Skip deduplication
+          </label>
+        </div>
+        
+        <div class="modal-actions">
+          <button type="button" class="btn" onclick="app.closeModal()">Cancel</button>
+          <button type="submit" class="btn primary">Submit Job</button>
+        </div>
+      </form>
+    `;
+
+    document.getElementById('modalTitle').textContent = 'Submit New Job';
+    document.getElementById('modalOverlay').classList.add('active');
+  }
+
+  showSubmitJobModal(endpointId) {
+    this.showCreateJobModal(endpointId);
+  }
+
+  async submitJob(event) {
+    event.preventDefault();
+
+    let input;
+    try {
+      input = JSON.parse(document.getElementById('jobInput').value);
+    } catch (e) {
+      this.showToast('Invalid JSON', 'Please enter valid JSON input', 'error');
+      return;
+    }
+
+    const data = {
+      endpointId: document.getElementById('jobEndpoint').value,
+      input,
+      options: {
+        skipDeduplication: document.getElementById('skipDedup').checked
+      }
+    };
+
+    try {
+      const result = await this.api('POST', '/jobs', data);
+      if (result.deduplicated) {
+        this.showToast('Duplicate Job', 'Job with identical input already exists', 'warning');
+      } else {
+        this.showToast('Job Submitted', 'Job has been added to the queue', 'success');
+      }
+      this.closeModal();
+      await this.loadJobs();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  async showDeadLetterQueue() {
+    try {
+      const dlq = await this.api('GET', '/dlq');
+
+      const modalBody = document.getElementById('modalBody');
+
+      if (dlq.length === 0) {
+        modalBody.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-state-icon">✅</div>
+            <p>No failed jobs in the dead letter queue</p>
+          </div>
+        `;
+      } else {
+        modalBody.innerHTML = `
+          <p style="margin-bottom: 1rem; color: var(--text-secondary);">
+            These jobs failed after multiple retry attempts.
+          </p>
+          <div class="dlq-list">
+            ${dlq.map(job => `
+              <div class="card" style="margin-bottom: 1rem;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
+                  <strong>${job.id.slice(0, 16)}...</strong>
+                  <span style="color: var(--error);">${job.attempts} attempts</span>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+                  ${this.escapeHtml(job.error)}
+                </p>
+                <button class="btn sm primary" onclick="app.retryDeadLetter('${job.id}')">
+                  🔄 Retry
+                </button>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+
+      document.getElementById('modalTitle').textContent = 'Dead Letter Queue';
+      document.getElementById('modalOverlay').classList.add('active');
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  async retryDeadLetter(dlqId) {
+    try {
+      await this.api('POST', `/dlq/${dlqId}/retry`);
+      this.showToast('Job Requeued', 'The job has been added back to the queue', 'success');
+      this.closeModal();
+      await this.loadJobs();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  // ==================== Costs ====================
+  async loadCosts() {
+    try {
+      const costs = await this.api('GET', '/costs');
+
+      // Update dashboard budget
+      document.getElementById('dailyBudgetText').textContent =
+        `$${costs.today.spent.toFixed(2)} / $${costs.today.limit}`;
+      document.getElementById('monthlyBudgetText').textContent =
+        `$${costs.month.spent.toFixed(2)} / $${costs.month.limit}`;
+
+      const dailyProgress = document.getElementById('dailyProgress');
+      dailyProgress.style.width = `${Math.min(costs.today.percentUsed, 100)}%`;
+      if (costs.today.percentUsed >= 80) dailyProgress.classList.add('warning');
+
+      const monthlyProgress = document.getElementById('monthlyProgress');
+      monthlyProgress.style.width = `${Math.min(costs.month.percentUsed, 100)}%`;
+      if (costs.month.percentUsed >= 80) monthlyProgress.classList.add('warning');
+
+      // Alerts
+      const alertsContainer = document.getElementById('budgetAlerts');
+      alertsContainer.innerHTML = costs.alerts.map(a =>
+        `<div class="alert ${a.level}">${a.message}</div>`
+      ).join('');
+
+      // Cost cards
+      document.getElementById('todaySpend').textContent = `$${costs.today.spent.toFixed(2)}`;
+      document.getElementById('costToday').textContent = `$${costs.today.spent.toFixed(2)}`;
+      document.getElementById('costMonth').textContent = `$${costs.month.spent.toFixed(2)}`;
+      document.getElementById('limitToday').textContent = `$${costs.today.limit}`;
+      document.getElementById('limitMonth').textContent = `$${costs.month.limit}`;
+
+      // Load history for chart
+      await this.loadCostHistory();
+
+    } catch (error) {
+      console.error('Error loading costs:', error);
+    }
+  }
+
+  async loadCostHistory() {
+    try {
+      const history = await this.api('GET', '/costs/history?days=7');
+
+      // Simple bar chart visualization
+      const chartContainer = document.getElementById('costChart');
+
+      if (history.length === 0) {
+        chartContainer.innerHTML = '<div class="chart-placeholder">No cost data available yet</div>';
+        return;
+      }
+
+      const maxCost = Math.max(...history.map(h => h.total), 1);
+
+      chartContainer.innerHTML = `
+        <div style="display: flex; align-items: flex-end; gap: 0.5rem; height: 200px; width: 100%;">
+          ${history.reverse().map(day => {
+        const height = (day.total / maxCost) * 100;
+        return `
+              <div style="flex: 1; display: flex; flex-direction: column; align-items: center;">
+                <div style="width: 100%; height: ${height}%; background: var(--accent-gradient); border-radius: 4px 4px 0 0; min-height: 4px;"></div>
+                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.5rem;">${day.date.slice(5)}</div>
+                <div style="font-size: 0.75rem; font-weight: 600;">$${day.total.toFixed(2)}</div>
+              </div>
+            `;
+      }).join('')}
+        </div>
+      `;
+
+      // Calculate week total
+      const weekTotal = history.reduce((sum, day) => sum + day.total, 0);
+      document.getElementById('costWeek').textContent = `$${weekTotal.toFixed(2)}`;
+
+    } catch (error) {
+      console.error('Error loading cost history:', error);
+    }
+  }
+
+  async saveBudgetSettings() {
+    const dailyLimit = parseFloat(document.getElementById('dailyLimit').value);
+    const monthlyLimit = parseFloat(document.getElementById('monthlyLimit').value);
+
+    try {
+      await this.api('POST', '/config', { key: 'budgetLimitDaily', value: dailyLimit });
+      await this.api('POST', '/config', { key: 'budgetLimitMonthly', value: monthlyLimit });
+      this.showToast('Settings Saved', 'Budget limits have been updated', 'success');
+      await this.loadCosts();
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  exportCosts() {
+    this.showToast('Export', 'Cost export feature coming soon', 'info');
+  }
+
+  // ==================== Benchmarks ====================
+  async loadBenchmarks() {
+    try {
+      this.benchmarks = await this.api('GET', '/benchmarks');
+      this.renderBenchmarks();
+    } catch (error) {
+      console.error('Error loading benchmarks:', error);
+    }
+  }
+
+  renderBenchmarks(tier = 'all') {
+    const table = document.getElementById('benchmarkTable');
+
+    let filtered = this.benchmarks;
+    if (tier !== 'all') {
+      filtered = this.benchmarks.filter(b => b.tier === tier);
+    }
+
+    table.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>GPU</th>
+            <th>VRAM</th>
+            <th>Cost/100 imgs</th>
+            <th>Latency</th>
+            <th>Cold Start</th>
+            <th>Tier</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(b => `
+            <tr>
+              <td>${b.gpuId}</td>
+              <td>${b.vram} GB</td>
+              <td>$${b.costPer100Images.toFixed(2)}</td>
+              <td>${(b.avgLatencyMs / 1000).toFixed(1)}s</td>
+              <td>${(b.coldStartMs / 1000).toFixed(1)}s</td>
+              <td><span class="tier-badge ${b.tier}">${b.tier}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  filterBenchmarks(tier) {
+    this.renderBenchmarks(tier);
+  }
+
+  // ==================== Auto-Shutdown ====================
+  async loadAutoShutdownStatus() {
+    try {
+      const status = await this.api('GET', '/auto-shutdown');
+      document.getElementById('autoShutdownToggle').checked = status.enabled;
+      document.getElementById('idleMinutes').textContent = status.idleThresholdMinutes;
+
+      const logsContainer = document.getElementById('shutdownLogs');
+      if (status.recentShutdowns.length > 0) {
+        logsContainer.innerHTML = status.recentShutdowns.map(log =>
+          `<div class="shutdown-log">⏰ ${log.podName} - ${this.formatDate(log.timestamp)}</div>`
+        ).join('');
+      }
+    } catch (error) {
+      console.error('Error loading auto-shutdown status:', error);
+    }
+  }
+
+  async toggleAutoShutdown(enabled) {
+    try {
+      await this.api('POST', '/auto-shutdown/toggle', { enabled });
+      this.showToast(
+        enabled ? 'Auto-Shutdown Enabled' : 'Auto-Shutdown Disabled',
+        enabled ? 'Idle pods will be automatically stopped' : 'Pods will run until manually stopped',
+        'success'
+      );
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    }
+  }
+
+  // ==================== Stats ====================
+  updateStats() {
+    document.getElementById('activePods').textContent =
+      this.pods.filter(p => p.desiredStatus === 'RUNNING').length;
+    document.getElementById('activeEndpoints').textContent = this.endpoints.length;
+  }
+
+  // ==================== Activity ====================
+  addActivity(icon, text) {
+    this.activity.unshift({
+      icon,
+      text,
+      time: new Date()
+    });
+
+    // Keep only last 20 items
+    this.activity = this.activity.slice(0, 20);
+
+    this.renderActivity();
+  }
+
+  renderActivity() {
+    const list = document.getElementById('activityList');
+
+    if (this.activity.length === 0) {
+      list.innerHTML = '<div class="activity-empty">No recent activity</div>';
+      return;
+    }
+
+    list.innerHTML = this.activity.map(a => `
+      <div class="activity-item">
+        <span class="activity-icon">${a.icon}</span>
+        <div class="activity-content">
+          <div class="activity-text">${this.escapeHtml(a.text)}</div>
+          <div class="activity-time">${this.formatTime(a.time)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ==================== Modal ====================
+  closeModal() {
+    document.getElementById('modalOverlay').classList.remove('active');
+  }
+
+  // ==================== Toast ====================
+  showToast(title, message, type = 'info') {
+    const container = document.getElementById('toastContainer');
+
+    const icons = {
+      success: '✅',
+      error: '❌',
+      warning: '⚠️',
+      info: 'ℹ️'
+    };
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+      <span class="toast-icon">${icons[type]}</span>
+      <div class="toast-content">
+        <div class="toast-title">${this.escapeHtml(title)}</div>
+        <div class="toast-message">${this.escapeHtml(message)}</div>
+      </div>
+    `;
+
+    container.appendChild(toast);
+
+    // Remove after 5 seconds
+    setTimeout(() => {
+      toast.style.animation = 'toastSlide 0.3s ease reverse';
+      setTimeout(() => toast.remove(), 300);
+    }, 5000);
+  }
+
+  // ==================== Utilities ====================
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  formatDuration(seconds) {
+    if (!seconds || seconds < 0) return '0s';
+
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+
+    if (hours > 0) return `${hours}h ${mins}m`;
+    if (mins > 0) return `${mins}m ${secs}s`;
+    return `${secs}s`;
+  }
+
+  formatDate(dateStr) {
+    if (!dateStr) return 'N/A';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  formatTime(date) {
+    const now = new Date();
+    const diff = (now - date) / 1000;
+
+    if (diff < 60) return 'Just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return date.toLocaleDateString();
+  }
+
+  getStatusClass(status) {
+    const map = {
+      'RUNNING': 'running',
+      'STOPPED': 'stopped',
+      'EXITED': 'exited',
+      'CREATED': 'stopped'
+    };
+    return map[status] || 'stopped';
+  }
+
+  // ==================== Image Generation ====================
+  selectedPod = null;
+  selectedEndpoint = null;
+  generationSource = 'endpoint'; // 'endpoint' or 'pod'
+  generatedImages = [];
+
+  async refreshGenerateOptions() {
+    await Promise.all([this.loadPods(), this.loadEndpoints()]);
+    this.updateGeneratePodSelect();
+    this.updateGenerateEndpointSelect();
+  }
+
+  switchGenerateSource(source) {
+    this.generationSource = source;
+
+    // Update tabs
+    document.querySelectorAll('.source-tab').forEach(tab => {
+      tab.classList.toggle('active', tab.dataset.source === source);
+    });
+
+    // Show/hide panels
+    document.getElementById('endpointSourcePanel').style.display = source === 'endpoint' ? 'block' : 'none';
+    document.getElementById('podSourcePanel').style.display = source === 'pod' ? 'block' : 'none';
+
+    // Reset selection
+    this.selectedPod = null;
+    this.selectedEndpoint = null;
+    document.getElementById('generateInterface').style.display = 'none';
+    document.getElementById('noSourceSelected').style.display = 'flex';
+  }
+
+  updateGenerateEndpointSelect() {
+    const select = document.getElementById('generateEndpointSelect');
+    if (!select) return;
+
+    select.innerHTML = `
+      <option value="">-- Select an endpoint (${this.endpoints.length} available) --</option>
+      ${this.endpoints.map(ep => `
+        <option value="${ep.id}">${this.escapeHtml(ep.name)} (Workers: ${ep.workersMin}-${ep.workersMax})</option>
+      `).join('')}
+    `;
+  }
+
+  updateGeneratePodSelect() {
+    const select = document.getElementById('generatePodSelect');
+    if (!select) return;
+
+    const runningPods = this.pods.filter(p => p.desiredStatus === 'RUNNING');
+
+    select.innerHTML = `
+      <option value="">-- Select a running pod (${runningPods.length} available) --</option>
+      ${runningPods.map(p => `
+        <option value="${p.id}">${this.escapeHtml(p.name)} - ${p.machine?.gpuDisplayName || 'GPU'}</option>
+      `).join('')}
+    `;
+  }
+
+  async selectEndpointForGeneration(endpointId) {
+    const statusEl = document.getElementById('endpointConnectionStatus');
+    const interfaceEl = document.getElementById('generateInterface');
+    const noSourceEl = document.getElementById('noSourceSelected');
+
+    if (!endpointId) {
+      this.selectedEndpoint = null;
+      interfaceEl.style.display = 'none';
+      noSourceEl.style.display = 'flex';
+      statusEl.innerHTML = '';
+      return;
+    }
+
+    statusEl.className = 'pod-connection-status connecting';
+    statusEl.innerHTML = '🔄 Checking endpoint...';
+
+    try {
+      const endpoint = this.endpoints.find(ep => ep.id === endpointId);
+      if (!endpoint) throw new Error('Endpoint not found');
+
+      // Check endpoint health
+      const health = await this.api('GET', `/endpoints/${endpointId}/health`);
+
+      this.selectedEndpoint = { ...endpoint, health };
+
+      statusEl.className = 'pod-connection-status connected';
+      statusEl.innerHTML = `✅ Ready: <strong>${this.escapeHtml(endpoint.name)}</strong> (Workers: ${health.workers?.idle || 0} idle, ${health.workers?.running || 0} running)`;
+
+      interfaceEl.style.display = 'grid';
+      noSourceEl.style.display = 'none';
+
+    } catch (error) {
+      statusEl.className = 'pod-connection-status error';
+      statusEl.innerHTML = `❌ Error: ${error.message}`;
+      interfaceEl.style.display = 'none';
+      noSourceEl.style.display = 'flex';
+    }
+  }
+
+  async selectPodForGeneration(podId) {
+    const statusEl = document.getElementById('podConnectionStatus');
+    const interfaceEl = document.getElementById('generateInterface');
+    const noSourceEl = document.getElementById('noSourceSelected');
+
+    if (!podId) {
+      this.selectedPod = null;
+      interfaceEl.style.display = 'none';
+      noSourceEl.style.display = 'flex';
+      statusEl.innerHTML = '';
+      return;
+    }
+
+    statusEl.className = 'pod-connection-status connecting';
+    statusEl.innerHTML = '🔄 Connecting to pod...';
+
+    try {
+      const pod = await this.api('GET', `/pods/${podId}`);
+      this.selectedPod = pod;
+
+      if (pod.runtime && pod.runtime.ports) {
+        const httpPort = pod.runtime.ports.find(p => p.privatePort === 8188 || p.privatePort === 3000);
+        if (httpPort && httpPort.ip) {
+          this.selectedPod.comfyUrl = `http://${httpPort.ip}:${httpPort.publicPort}`;
+        }
+      }
+
+      statusEl.className = 'pod-connection-status connected';
+      statusEl.innerHTML = `✅ Connected to <strong>${this.escapeHtml(pod.name)}</strong> (${pod.machine?.gpuDisplayName || 'GPU'})`;
+
+      interfaceEl.style.display = 'grid';
+      noSourceEl.style.display = 'none';
+
+    } catch (error) {
+      statusEl.className = 'pod-connection-status error';
+      statusEl.innerHTML = `❌ Error: ${error.message}`;
+      interfaceEl.style.display = 'none';
+      noSourceEl.style.display = 'flex';
+    }
+  }
+
+  async generateImage(event) {
+    event.preventDefault();
+
+    // Check if we have a source selected
+    if (this.generationSource === 'endpoint' && !this.selectedEndpoint) {
+      this.showToast('No Endpoint Selected', 'Please select an endpoint first', 'error');
+      return;
+    }
+    if (this.generationSource === 'pod' && !this.selectedPod) {
+      this.showToast('No Pod Selected', 'Please select a running pod first', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('generateBtn');
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.innerHTML = '🔄 Generating...';
+
+    const params = {
+      prompt: document.getElementById('promptInput').value,
+      negative_prompt: document.getElementById('negativePrompt').value,
+      width: parseInt(document.getElementById('genWidth').value),
+      height: parseInt(document.getElementById('genHeight').value),
+      steps: parseInt(document.getElementById('genSteps').value),
+      cfg_scale: parseFloat(document.getElementById('genCfg').value),
+      sampler: document.getElementById('genSampler').value,
+      batch_size: parseInt(document.getElementById('genBatch').value)
+    };
+
+    try {
+      let result;
+
+      if (this.generationSource === 'endpoint') {
+        // Generate via serverless endpoint
+        result = await this.api('POST', `/endpoints/${this.selectedEndpoint.id}/generate`, params);
+      } else {
+        // Generate via pod
+        result = await this.api('POST', `/pods/${this.selectedPod.id}/generate`, params);
+      }
+
+      if (result.images && result.images.length > 0) {
+        this.generatedImages = [...result.images, ...this.generatedImages];
+        this.renderGeneratedImages();
+        this.showToast('Images Generated!', `${result.images.length} image(s) created`, 'success');
+      } else if (result.output) {
+        // Handle base64 or URL output from serverless
+        const images = Array.isArray(result.output) ? result.output : [result.output];
+        this.generatedImages = [...images.map(img => ({ url: img })), ...this.generatedImages];
+        this.renderGeneratedImages();
+        this.showToast('Images Generated!', `${images.length} image(s) created`, 'success');
+      } else {
+        this.showToast('Generation Complete', 'Check the output for results', 'info');
+      }
+    } catch (error) {
+      this.showToast('Generation Failed', error.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.innerHTML = '🎨 Generate Image';
+    }
+  }
+
+  renderGeneratedImages() {
+    const container = document.getElementById('generatedImages');
+
+    if (this.generatedImages.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon">🎨</div>
+          <p class="empty-state-text">Generated images will appear here</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = this.generatedImages.map((img, i) => `
+      <div class="generated-image" onclick="app.viewImage('${img.url || img}')">
+        <img src="${img.url || img}" alt="Generated image ${i + 1}" loading="lazy">
+        <div class="generated-image-overlay">
+          <button onclick="event.stopPropagation(); app.downloadImage('${img.url || img}', 'image_${i}.png')">💾</button>
+          <button onclick="event.stopPropagation(); app.viewImage('${img.url || img}')">🔍</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  viewImage(url) {
+    const modalBody = document.getElementById('modalBody');
+    modalBody.innerHTML = `
+      <div style="text-align: center;">
+        <img src="${url}" style="max-width: 100%; max-height: 70vh; border-radius: 8px;" alt="Generated image">
+        <div style="margin-top: 1rem;">
+          <button class="btn primary" onclick="app.downloadImage('${url}', 'generated_image.png')">
+            💾 Download
+          </button>
+        </div>
+      </div>
+    `;
+    document.getElementById('modalTitle').textContent = 'Generated Image';
+    document.getElementById('modalOverlay').classList.add('active');
+  }
+
+  downloadImage(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.target = '_blank';
+    a.click();
+  }
+}
+
+// Initialize app
+const app = new GPUOrchestrator();
+
+// Close modal on overlay click
+document.getElementById('modalOverlay')?.addEventListener('click', (e) => {
+  if (e.target.id === 'modalOverlay') {
+    app.closeModal();
+  }
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    app.closeModal();
+  }
+});
+
+// Update generate options when switching to generate tab
+document.querySelector('[data-tab="generate"]')?.addEventListener('click', () => {
+  app.refreshGenerateOptions();
+});

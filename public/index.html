@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description"
+    content="Panel de control para orquestación de GPUs en RunPod - Gestión de infraestructura para generación masiva de imágenes y video">
+  <title>GPU Orchestrator | RunPod Control Panel</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-icon">🚀</span>
+          <span class="logo-text">GPU Orchestrator</span>
+        </div>
+        <span class="version-badge">v1.0</span>
+      </div>
+      <div class="header-center">
+        <nav class="nav-tabs">
+          <button class="nav-tab active" data-tab="dashboard">Dashboard</button>
+          <button class="nav-tab" data-tab="generate">🎨 Generate</button>
+          <button class="nav-tab" data-tab="pods">Pods</button>
+          <button class="nav-tab" data-tab="serverless">Serverless</button>
+          <button class="nav-tab" data-tab="jobs">Jobs</button>
+          <button class="nav-tab" data-tab="costs">Costs</button>
+          <button class="nav-tab" data-tab="help">📚 Ayuda</button>
+        </nav>
+      </div>
+      <div class="header-right">
+        <div class="connection-status" id="connectionStatus">
+          <span class="status-dot"></span>
+          <span class="status-text">Connecting...</span>
+        </div>
+        <div class="balance-display" id="balanceDisplay">
+          <span class="balance-label">Balance</span>
+          <span class="balance-value">$--</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Dashboard Tab -->
+      <section class="tab-content active" id="tab-dashboard">
+        <div class="dashboard-grid">
+          <!-- Quick Stats -->
+          <div class="card stats-card">
+            <h3 class="card-title">📊 Quick Stats</h3>
+            <div class="stats-grid">
+              <div class="stat-item">
+                <span class="stat-value" id="activePods">0</span>
+                <span class="stat-label">Active Pods</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-value" id="activeEndpoints">0</span>
+                <span class="stat-label">Endpoints</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-value" id="queuedJobs">0</span>
+                <span class="stat-label">Queued Jobs</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-value" id="todaySpend">$0</span>
+                <span class="stat-label">Today Spend</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Budget Overview -->
+          <div class="card budget-card">
+            <h3 class="card-title">💰 Budget Status</h3>
+            <div class="budget-bars">
+              <div class="budget-item">
+                <div class="budget-header">
+                  <span>Daily Limit</span>
+                  <span id="dailyBudgetText">$0 / $50</span>
+                </div>
+                <div class="progress-bar">
+                  <div class="progress-fill" id="dailyProgress" style="width: 0%"></div>
+                </div>
+              </div>
+              <div class="budget-item">
+                <div class="budget-header">
+                  <span>Monthly Limit</span>
+                  <span id="monthlyBudgetText">$0 / $500</span>
+                </div>
+                <div class="progress-bar">
+                  <div class="progress-fill monthly" id="monthlyProgress" style="width: 0%"></div>
+                </div>
+              </div>
+            </div>
+            <div class="alerts-container" id="budgetAlerts"></div>
+          </div>
+
+          <!-- Quick Actions -->
+          <div class="card actions-card">
+            <h3 class="card-title">⚡ Quick Actions</h3>
+            <div class="actions-grid">
+              <button class="action-btn primary" onclick="app.showCreatePodModal()">
+                <span class="action-icon">➕</span>
+                <span>New Pod</span>
+              </button>
+              <button class="action-btn secondary" onclick="app.showCreateJobModal()">
+                <span class="action-icon">📤</span>
+                <span>Submit Job</span>
+              </button>
+              <button class="action-btn warning" onclick="app.stopAllPods()">
+                <span class="action-icon">⏹️</span>
+                <span>Stop All</span>
+              </button>
+              <button class="action-btn" onclick="app.refreshAll()">
+                <span class="action-icon">🔄</span>
+                <span>Refresh</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- GPU Benchmarks -->
+          <div class="card benchmarks-card">
+            <h3 class="card-title">📈 GPU Recommendations</h3>
+            <div class="benchmark-tabs">
+              <button class="bench-tab active" data-tier="all">All</button>
+              <button class="bench-tab" data-tier="budget">Budget</button>
+              <button class="bench-tab" data-tier="balanced">Balanced</button>
+              <button class="bench-tab" data-tier="premium">Premium</button>
+            </div>
+            <div class="benchmark-table" id="benchmarkTable">
+              <div class="loading-spinner"></div>
+            </div>
+          </div>
+
+          <!-- Recent Activity -->
+          <div class="card activity-card">
+            <h3 class="card-title">📜 Recent Activity</h3>
+            <div class="activity-list" id="activityList">
+              <div class="activity-empty">No recent activity</div>
+            </div>
+          </div>
+
+          <!-- Auto-Shutdown -->
+          <div class="card autoshutdown-card">
+            <h3 class="card-title">⏰ Auto-Shutdown</h3>
+            <div class="autoshutdown-content">
+              <div class="toggle-row">
+                <span>Enable auto-shutdown</span>
+                <label class="toggle">
+                  <input type="checkbox" id="autoShutdownToggle" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <p class="helper-text">Automatically stops idle pods after <strong id="idleMinutes">30</strong> minutes
+              </p>
+              <div class="shutdown-logs" id="shutdownLogs"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Generate Tab -->
+      <section class="tab-content" id="tab-generate">
+        <div class="tab-header">
+          <h2>🎨 Image Generation</h2>
+          <button class="btn" onclick="app.refreshGenerateOptions()">
+            <span>🔄</span> Refresh
+          </button>
+        </div>
+
+        <div class="generate-container">
+          <!-- Source Selection -->
+          <div class="card">
+            <h3 class="card-title">Select Generation Source</h3>
+
+            <div class="source-tabs">
+              <button class="source-tab active" data-source="endpoint" onclick="app.switchGenerateSource('endpoint')">
+                ☁️ Serverless Endpoint
+              </button>
+              <button class="source-tab" data-source="pod" onclick="app.switchGenerateSource('pod')">
+                🖥️ Running Pod
+              </button>
+            </div>
+
+            <!-- Endpoint Selection -->
+            <div id="endpointSourcePanel" class="source-panel">
+              <div class="info-box success">
+                <strong>💡 Serverless:</strong> Pay only for what you use. Workers start automatically and shut down
+                when idle.
+              </div>
+              <div class="form-group">
+                <label for="generateEndpointSelect">Select Endpoint</label>
+                <select id="generateEndpointSelect" onchange="app.selectEndpointForGeneration(this.value)">
+                  <option value="">-- Loading endpoints... --</option>
+                </select>
+              </div>
+              <div id="endpointConnectionStatus" class="pod-connection-status"></div>
+            </div>
+
+            <!-- Pod Selection -->
+            <div id="podSourcePanel" class="source-panel" style="display: none;">
+              <div class="info-box">
+                <strong>💡 Pod:</strong> Use a running pod directly. The pod must have ComfyUI installed and running.
+              </div>
+              <div class="form-group">
+                <label for="generatePodSelect">Select Running Pod</label>
+                <select id="generatePodSelect" onchange="app.selectPodForGeneration(this.value)">
+                  <option value="">-- Select a running pod --</option>
+                </select>
+              </div>
+              <div id="podConnectionStatus" class="pod-connection-status"></div>
+            </div>
+          </div>
+
+          <!-- Generation Interface -->
+          <div class="generate-interface" id="generateInterface" style="display: none;">
+            <div class="card generate-form-card">
+              <h3 class="card-title">✨ Generate Image</h3>
+              <form onsubmit="app.generateImage(event)">
+                <div class="form-group">
+                  <label for="promptInput">Prompt</label>
+                  <textarea id="promptInput" rows="4"
+                    placeholder="A beautiful sunset over the ocean, highly detailed, 8k, masterpiece"></textarea>
+                </div>
+                <div class="form-group">
+                  <label for="negativePrompt">Negative Prompt</label>
+                  <textarea id="negativePrompt" rows="2" placeholder="blurry, low quality, distorted"></textarea>
+                </div>
+                <div class="generate-options">
+                  <div class="form-group">
+                    <label for="genWidth">Width</label>
+                    <select id="genWidth">
+                      <option value="512">512</option>
+                      <option value="768">768</option>
+                      <option value="1024" selected>1024</option>
+                      <option value="1280">1280</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="genHeight">Height</label>
+                    <select id="genHeight">
+                      <option value="512">512</option>
+                      <option value="768">768</option>
+                      <option value="1024" selected>1024</option>
+                      <option value="1280">1280</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="genSteps">Steps</label>
+                    <input type="number" id="genSteps" value="20" min="1" max="150">
+                  </div>
+                  <div class="form-group">
+                    <label for="genCfg">CFG Scale</label>
+                    <input type="number" id="genCfg" value="7" min="1" max="30" step="0.5">
+                  </div>
+                  <div class="form-group">
+                    <label for="genSampler">Sampler</label>
+                    <select id="genSampler">
+                      <option value="euler">Euler</option>
+                      <option value="euler_ancestral">Euler Ancestral</option>
+                      <option value="dpmpp_2m" selected>DPM++ 2M</option>
+                      <option value="dpmpp_sde">DPM++ SDE</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="genBatch">Batch Size</label>
+                    <input type="number" id="genBatch" value="1" min="1" max="8">
+                  </div>
+                </div>
+                <button type="submit" class="btn primary generate-btn" id="generateBtn">
+                  🎨 Generate Image
+                </button>
+              </form>
+            </div>
+
+            <!-- Generated Images -->
+            <div class="card generated-images-card">
+              <h3 class="card-title">🖼️ Generated Images</h3>
+              <div class="generated-images" id="generatedImages">
+                <div class="empty-state">
+                  <div class="empty-state-icon">🎨</div>
+                  <p class="empty-state-text">Generated images will appear here</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- No Source Selected State -->
+          <div class="empty-state" id="noSourceSelected">
+            <div class="empty-state-icon">☁️</div>
+            <p class="empty-state-text">Select an endpoint or pod to start generating images</p>
+            <p class="helper-text">Use serverless endpoints for pay-per-use, or a running pod for direct access</p>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- Pods Tab -->
+      <section class="tab-content" id="tab-pods">
+        <div class="tab-header">
+          <h2>Pod Management</h2>
+          <button class="btn primary" onclick="app.showCreatePodModal()">
+            <span>➕</span> Create Pod
+          </button>
+        </div>
+
+        <div class="info-box">
+          <strong>💡 Pods vs Serverless:</strong> Use Pods for development, debugging, or when you need persistent
+          access.
+          They keep running (and billing) until you stop them. Use Serverless for production workloads with automatic
+          scaling.
+        </div>
+
+        <div class="resource-grid" id="podsGrid">
+          <div class="loading-placeholder">
+            <div class="loading-spinner"></div>
+            <p>Loading pods...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Serverless Tab -->
+      <section class="tab-content" id="tab-serverless">
+        <div class="tab-header">
+          <h2>Serverless Endpoints</h2>
+          <button class="btn primary" onclick="app.showCreateEndpointModal()">
+            <span>➕</span> Create Endpoint
+          </button>
+        </div>
+
+        <div class="info-box success">
+          <strong>💡 Serverless Benefits:</strong> Zero cost when idle, automatic scaling, ideal for production
+          workloads.
+          Workers spin up on demand and shut down automatically.
+        </div>
+
+        <div class="resource-grid" id="endpointsGrid">
+          <div class="loading-placeholder">
+            <div class="loading-spinner"></div>
+            <p>Loading endpoints...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Jobs Tab -->
+      <section class="tab-content" id="tab-jobs">
+        <div class="tab-header">
+          <h2>Job Queue</h2>
+          <div class="header-actions">
+            <button class="btn secondary" onclick="app.showDeadLetterQueue()">
+              <span>💀</span> Dead Letter Queue
+            </button>
+            <button class="btn primary" onclick="app.showCreateJobModal()">
+              <span>📤</span> Submit Job
+            </button>
+          </div>
+        </div>
+
+        <div class="queue-stats" id="queueStats">
+          <div class="queue-stat">
+            <span class="queue-stat-value" id="jobsPending">0</span>
+            <span class="queue-stat-label">Pending</span>
+          </div>
+          <div class="queue-stat">
+            <span class="queue-stat-value" id="jobsRunning">0</span>
+            <span class="queue-stat-label">Running</span>
+          </div>
+          <div class="queue-stat">
+            <span class="queue-stat-value" id="jobsCompleted">0</span>
+            <span class="queue-stat-label">Completed</span>
+          </div>
+          <div class="queue-stat">
+            <span class="queue-stat-value" id="jobsFailed">0</span>
+            <span class="queue-stat-label">Failed</span>
+          </div>
+        </div>
+
+        <div class="jobs-filters">
+          <select id="jobStatusFilter" onchange="app.filterJobs()">
+            <option value="">All Status</option>
+            <option value="PENDING">Pending</option>
+            <option value="RUNNING">Running</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="FAILED">Failed</option>
+          </select>
+          <button class="btn" onclick="app.loadJobs()">
+            <span>🔄</span> Refresh
+          </button>
+        </div>
+
+        <div class="jobs-table" id="jobsTable">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Endpoint</th>
+                <th>Duration</th>
+                <th>Cost</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="jobsTableBody">
+              <tr>
+                <td colspan="7" class="loading-cell">Loading jobs...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Costs Tab -->
+      <section class="tab-content" id="tab-costs">
+        <div class="tab-header">
+          <h2>Cost Analytics</h2>
+          <button class="btn" onclick="app.exportCosts()">
+            <span>📥</span> Export CSV
+          </button>
+        </div>
+
+        <div class="costs-overview">
+          <div class="cost-card">
+            <div class="cost-card-header">Today</div>
+            <div class="cost-card-value" id="costToday">$0.00</div>
+            <div class="cost-card-limit">Limit: <span id="limitToday">$50</span></div>
+          </div>
+          <div class="cost-card">
+            <div class="cost-card-header">This Week</div>
+            <div class="cost-card-value" id="costWeek">$0.00</div>
+          </div>
+          <div class="cost-card">
+            <div class="cost-card-header">This Month</div>
+            <div class="cost-card-value" id="costMonth">$0.00</div>
+            <div class="cost-card-limit">Limit: <span id="limitMonth">$500</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Cost History (Last 30 Days)</h3>
+          <div class="cost-chart" id="costChart">
+            <div class="chart-placeholder">Cost chart will appear here</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Budget Settings</h3>
+          <div class="settings-form">
+            <div class="form-group">
+              <label for="dailyLimit">Daily Limit ($)</label>
+              <input type="number" id="dailyLimit" value="50" min="1" max="10000">
+            </div>
+            <div class="form-group">
+              <label for="monthlyLimit">Monthly Limit ($)</label>
+              <input type="number" id="monthlyLimit" value="500" min="1" max="100000">
+            </div>
+            <button class="btn primary" onclick="app.saveBudgetSettings()">
+              Save Settings
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Help Tab -->
+      <section class="tab-content" id="tab-help">
+        <div class="tab-header">
+          <h2>📚 Guía de Uso</h2>
+        </div>
+
+        <div class="help-container">
+          <!-- Quick Start -->
+          <div class="card help-card">
+            <h3 class="card-title">🚀 Inicio Rápido</h3>
+            <div class="help-content">
+              <p class="help-intro">Esta aplicación te permite crear imágenes con IA usando GPUs en la nube.
+                Hay <strong>dos formas</strong> de hacerlo:</p>
+
+              <div class="help-comparison">
+                <div class="help-option">
+                  <div class="help-option-header">☁️ Serverless (Recomendado)</div>
+                  <ul>
+                    <li>✅ Solo pagas cuando generas</li>
+                    <li>✅ Se enciende automáticamente</li>
+                    <li>✅ Ideal para uso ocasional</li>
+                    <li>⏱️ Puede tardar más la primera imagen</li>
+                  </ul>
+                </div>
+                <div class="help-option">
+                  <div class="help-option-header">🖥️ Pod (Máquina dedicada)</div>
+                  <ul>
+                    <li>✅ Siempre encendido y rápido</li>
+                    <li>✅ Acceso directo a ComfyUI</li>
+                    <li>⚠️ Pagas mientras esté encendido</li>
+                    <li>⚠️ Hay que apagarlo manualmente</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Guide 1: Serverless -->
+          <div class="card help-card">
+            <h3 class="card-title">☁️ Cómo usar Serverless (Más económico)</h3>
+            <div class="help-steps">
+              <div class="help-step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                  <h4>Crea un Endpoint en RunPod</h4>
+                  <p>Ve a <a href="https://www.runpod.io/console/serverless" target="_blank">RunPod Serverless</a>
+                    y crea un nuevo endpoint con una plantilla de Stable Diffusion o ComfyUI.</p>
+                  <div class="step-tip">💡 Busca "Stable Diffusion" en las plantillas</div>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                  <h4>Ve a la pestaña "🎨 Generate"</h4>
+                  <p>Haz clic en la pestaña Generate en la barra de navegación superior.</p>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                  <h4>Selecciona tu Endpoint</h4>
+                  <p>Asegúrate de que "☁️ Serverless Endpoint" está seleccionado y elige tu endpoint del menú
+                    desplegable.</p>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                  <h4>Escribe tu prompt y genera</h4>
+                  <p>Escribe qué quieres crear en el campo "Prompt" y haz clic en "🎨 Generate Image".</p>
+                  <div class="step-tip">💡 Ejemplo: "A beautiful sunset over the ocean, highly detailed, 8k"</div>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">5</div>
+                <div class="step-content">
+                  <h4>¡Espera tu imagen!</h4>
+                  <p>La primera vez puede tardar 1-2 minutos mientras se enciende el worker. Las siguientes serán más
+                    rápidas.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Guide 2: Pods -->
+          <div class="card help-card">
+            <h3 class="card-title">🖥️ Cómo usar Pods (Más Control)</h3>
+            <div class="help-steps">
+              <div class="help-step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                  <h4>Crea un Pod</h4>
+                  <p>Ve a la pestaña <strong>Pods</strong> y haz clic en "Create Pod".</p>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                  <h4>Elige el Tipo de Tarea</h4>
+                  <p>Ahora puedes elegir entre <strong>dos tipos de tareas</strong>:</p>
+                  <ul>
+                    <li><strong>🎨 Image Gen:</strong> Para crear imágenes con Stable Diffusion (ComfyUI)</li>
+                    <li><strong>🎵 Music Gen:</strong> Para crear música con HeartMuLa Studio</li>
+                  </ul>
+                  <div class="step-tip">⚠️ Music Gen requiere GPUs de mínimo 16GB VRAM (RTX 4090, A100, etc.)</div>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                  <h4>Elige la GPU</h4>
+                  <ul>
+                    <li><strong>Para Image Gen:</strong> RTX 3080, RTX 4090, etc. (8GB+)</li>
+                    <li><strong>Para Music Gen:</strong> RTX 4090, A100, RTX A6000 (16GB+)</li>
+                    <li>Las GPUs con ⭐ son las recomendadas (24GB+)</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                  <h4>Espera a que arranque</h4>
+                  <p>El pod pasará a estado <span class="status-badge running">RUNNING</span> cuando esté listo.
+                    Esto puede tardar 2-5 minutos.</p>
+                </div>
+              </div>
+
+              <div class="help-step">
+                <div class="step-number">5</div>
+                <div class="step-content">
+                  <h4>Conecta al Pod</h4>
+                  <p><strong>Para Image Gen:</strong> Abre el puerto <code>8188</code> para ComfyUI.</p>
+                  <p><strong>Para Music Gen:</strong> Abre el puerto <code>7860</code> para HeartMuLa (Gradio).</p>
+                  <div class="step-tip">💡 También puedes usar la pestaña "🎨 Generate" → "🖥️ Running Pod"</div>
+                </div>
+              </div>
+
+              <div class="help-step important">
+                <div class="step-number">⚠️</div>
+                <div class="step-content">
+                  <h4>¡IMPORTANTE: Apaga el Pod cuando termines!</h4>
+                  <p>Los pods <strong>cuestan dinero mientras están encendidos</strong>.
+                    Haz clic en "⏹️ Stop" cuando termines para no gastar dinero.</p>
+                  <div class="step-tip">💡 La app tiene auto-apagado, pero es mejor pararlo manualmente.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- FAQ -->
+          <div class="card help-card">
+            <h3 class="card-title">❓ Preguntas Frecuentes</h3>
+            <div class="help-faq">
+              <div class="faq-item">
+                <div class="faq-question">¿Por qué dice "No instances available"?</div>
+                <div class="faq-answer">Esa GPU está ocupada. Prueba con otra GPU diferente (RTX 3090 suele tener más
+                  disponibilidad).</div>
+              </div>
+
+              <div class="faq-item">
+                <div class="faq-question">¿Cuánto cuesta crear imágenes?</div>
+                <div class="faq-answer">Depende de la GPU, pero aproximadamente $0.002-0.01 por imagen. Una RTX 4090
+                  cuesta ~$0.44/hora.</div>
+              </div>
+
+              <div class="faq-item">
+                <div class="faq-question">¿Qué diferencia hay entre Pod y Serverless?</div>
+                <div class="faq-answer">
+                  <strong>Pod:</strong> Es como alquilar un ordenador completo. Pagas mientras esté encendido.<br>
+                  <strong>Serverless:</strong> Es como pagar por cada trabajo. Solo pagas cuando generas imágenes.
+                </div>
+              </div>
+
+              <div class="faq-item">
+                <div class="faq-question">¿Cómo veo mi saldo de RunPod?</div>
+                <div class="faq-answer">Tu saldo aparece arriba a la derecha donde dice "Balance". También puedes verlo
+                  en la consola de RunPod.</div>
+              </div>
+
+              <div class="faq-item">
+                <div class="faq-question">La imagen no sale bien, ¿qué hago?</div>
+                <div class="faq-answer">
+                  <ul>
+                    <li>Añade más detalle al prompt: "highly detailed, 8k, masterpiece"</li>
+                    <li>Usa negative prompt: "blurry, low quality, distorted"</li>
+                    <li>Sube los steps a 30-40</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div class="faq-item">
+                <div class="faq-question">¿Qué es Music Gen / HeartMuLa?</div>
+                <div class="faq-answer">
+                  HeartMuLa Studio es una herramienta de generación de música con IA.
+                  Puedes crear composiciones musicales describiendo lo que quieres.
+                  <strong>Importante:</strong> Necesita GPUs potentes (mínimo 16GB VRAM).
+                </div>
+              </div>
+
+              <div class="faq-item">
+                <div class="faq-question">¿Qué puerto uso para cada tipo de pod?</div>
+                <div class="faq-answer">
+                  <ul>
+                    <li><strong>Image Gen (ComfyUI):</strong> Puerto 8188</li>
+                    <li><strong>Music Gen (HeartMuLa):</strong> Puerto 7860</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Glossary -->
+          <div class="card help-card">
+            <h3 class="card-title">📖 Glosario</h3>
+            <div class="help-glossary">
+              <div class="glossary-item">
+                <dt>Pod</dt>
+                <dd>Un ordenador virtual con GPU que alquilas. Como tener tu propio servidor.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>Endpoint</dt>
+                <dd>Un servicio que genera imágenes cuando lo llamas. Se enciende solo cuando lo necesitas.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>Prompt</dt>
+                <dd>El texto que describe qué imagen quieres crear. Cuanto más detallado, mejor.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>Negative Prompt</dt>
+                <dd>Lo que NO quieres que aparezca en la imagen (borroso, mala calidad, etc.)</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>Steps</dt>
+                <dd>Cuántas veces se refina la imagen. Más steps = más calidad pero más tiempo.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>CFG Scale</dt>
+                <dd>Cuánto sigue la IA tu prompt. 7-10 es lo normal. Más alto = más literal.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>ComfyUI</dt>
+                <dd>Un programa para crear imágenes con IA usando nodos visuales. Muy potente.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>HeartMuLa</dt>
+                <dd>Herramienta de generación de música con IA. Usa Gradio en el puerto 7860.</dd>
+              </div>
+              <div class="glossary-item">
+                <dt>VRAM</dt>
+                <dd>Memoria de la GPU. Modelos grandes como Music Gen necesitan 16GB o más.</dd>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </main>
+
+    <!-- Modals -->
+    <div class="modal-overlay" id="modalOverlay">
+      <div class="modal" id="modal">
+        <div class="modal-header">
+          <h3 id="modalTitle">Modal Title</h3>
+          <button class="modal-close" onclick="app.closeModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="modalBody">
+          <!-- Dynamic content -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+
+</html>
