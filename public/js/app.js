@@ -83,18 +83,27 @@ class GPUOrchestrator {
         break;
       case 'job:completed':
         this.addActivity('✅', `Job completed: ${eventData.id.slice(0, 8)}...`);
-        this.showToast('Job Completed', 'A job has finished successfully', 'success');
+        this.showToast('Job Completado', 'Un trabajo ha terminado correctamente', 'success');
         this.loadJobs();
         break;
       case 'job:failed':
         this.addActivity('❌', `Job failed: ${eventData.id.slice(0, 8)}...`);
-        this.showToast('Job Failed', eventData.error || 'Unknown error', 'error');
+        this.showToast('Job Fallido', eventData.error || 'Error desconocido', 'error');
         this.loadJobs();
         break;
       case 'pod:auto-stopped':
         this.addActivity('⏰', `Auto-stopped: ${eventData.podName}`);
-        this.showToast('Pod Auto-Stopped', `${eventData.podName} was stopped due to inactivity`, 'warning');
+        this.showToast('Pod Auto-Detenido', `${eventData.podName} parado por inactividad`, 'warning');
         this.loadPods();
+        break;
+      case 'pod:spending-limit-exceeded':
+        this.addActivity('💰', `Límite excedido: ${eventData.podName} ($${eventData.totalSpent})`);
+        this.showToast('⚠️ Límite de Gasto', `${eventData.podName} eliminado: gastó $${eventData.totalSpent}/$${eventData.spendingLimit}`, 'warning');
+        this.loadPods();
+        break;
+      case 'pod:auto-stop-failed':
+      case 'pod:terminate-failed':
+        this.showToast('Error', `No se pudo detener el pod: ${eventData.error}`, 'error');
         break;
     }
   }
@@ -214,18 +223,26 @@ class GPUOrchestrator {
       grid.innerHTML = `
         <div class="empty-state">
           <div class="empty-state-icon">🖥️</div>
-          <p class="empty-state-text">No pods running</p>
-          <button class="btn primary" onclick="app.showCreatePodModal()">Create First Pod</button>
+          <p class="empty-state-text">No hay pods activos</p>
+          <button class="btn primary" onclick="app.showCreatePodModal()">Crear Primer Pod</button>
         </div>
       `;
       return;
     }
 
-    grid.innerHTML = this.pods.map(pod => `
-      <div class="resource-card">
+    grid.innerHTML = this.pods.map(pod => {
+      const isRunning = pod.desiredStatus === 'RUNNING';
+      const statusClass = this.getStatusClass(pod.desiredStatus);
+      const connections = isRunning ? this.getPodConnectionUrls(pod.id) : [];
+
+      return `
+      <div class="resource-card ${statusClass}-card pod-card-animate">
         <div class="resource-header">
-          <div class="resource-name">${this.escapeHtml(pod.name)}</div>
-          <span class="resource-status ${this.getStatusClass(pod.desiredStatus)}">
+          <div class="resource-name-row">
+            <div class="resource-name">${this.escapeHtml(pod.name)}</div>
+          </div>
+          <span class="resource-status ${statusClass}">
+            <span class="status-indicator"></span>
             ${pod.desiredStatus}
           </span>
         </div>
@@ -236,7 +253,7 @@ class GPUOrchestrator {
           </div>
           <div class="resource-detail">
             <span class="resource-detail-label">Cost/hr</span>
-            <span class="resource-detail-value">$${(pod.costPerHr || 0).toFixed(3)}</span>
+            <span class="resource-detail-value cost-value">$${(pod.costPerHr || 0).toFixed(3)}</span>
           </div>
           <div class="resource-detail">
             <span class="resource-detail-label">Memory</span>
@@ -247,15 +264,84 @@ class GPUOrchestrator {
             <span class="resource-detail-value">${this.formatDuration(pod.uptimeSeconds)}</span>
           </div>
         </div>
+
+        ${isRunning ? `
+        <div class="connection-panel">
+          <div class="connection-panel-header">
+            <span class="connection-title">🔗 Conexiones</span>
+            <span class="connection-live-dot"></span>
+          </div>
+          ${connections.map(c => `
+          <div class="connection-row">
+            <div class="connection-info">
+              <span class="connection-icon">${c.icon}</span>
+              <div class="connection-meta">
+                <span class="connection-label">${c.label}</span>
+                <span class="connection-port">Puerto ${c.port}</span>
+              </div>
+            </div>
+            <div class="connection-actions">
+              <button class="btn-icon btn-copy" onclick="app.copyToClipboard('${c.url}')" title="Copiar URL">
+                📋
+              </button>
+              <button class="btn-icon btn-open" onclick="window.open('${c.url}', '_blank')" title="Abrir en nueva pestaña">
+                🔗
+              </button>
+            </div>
+          </div>
+          `).join('')}
+        </div>
+        ` : ''}
+
         <div class="resource-actions">
-          ${pod.desiredStatus === 'RUNNING' ?
-        `<button class="btn sm warning" onclick="app.stopPod('${pod.id}')">⏹️ Stop</button>` :
-        `<button class="btn sm primary" onclick="app.startPod('${pod.id}')">▶️ Start</button>`
-      }
+          ${isRunning ?
+          `<button class="btn sm warning" onclick="app.stopPod('${pod.id}')">⏹️ Stop</button>` :
+          `<button class="btn sm primary" onclick="app.startPod('${pod.id}')">▶️ Start</button>`
+        }
           <button class="btn sm danger" onclick="app.terminatePod('${pod.id}')">🗑️ Delete</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+  }
+
+  getPodConnectionUrls(podId) {
+    return [
+      {
+        icon: '🎨',
+        label: 'ComfyUI (Imágenes)',
+        port: 8188,
+        url: `https://${podId}-8188.proxy.runpod.net`
+      },
+      {
+        icon: '🎵',
+        label: 'Gradio / HeartMuLa (Música)',
+        port: 7860,
+        url: `https://${podId}-7860.proxy.runpod.net`
+      },
+      {
+        icon: '📓',
+        label: 'Jupyter Lab (Archivos)',
+        port: 8888,
+        url: `https://${podId}-8888.proxy.runpod.net`
+      }
+    ];
+  }
+
+  async copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      this.showToast('URL Copiada', 'La URL se ha copiado al portapapeles', 'success');
+    } catch (err) {
+      // Fallback for older browsers
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      this.showToast('URL Copiada', 'La URL se ha copiado al portapapeles', 'success');
+    }
   }
 
   async stopPod(podId) {
@@ -1030,25 +1116,26 @@ ${JSON.stringify(job.output, null, 2)}
     try {
       const history = await this.api('GET', '/costs/history?days=7');
 
-      // Simple bar chart visualization
       const chartContainer = document.getElementById('costChart');
 
       if (history.length === 0) {
-        chartContainer.innerHTML = '<div class="chart-placeholder">No cost data available yet</div>';
+        chartContainer.innerHTML = '<div class="chart-placeholder">Aún no hay datos de coste</div>';
         return;
       }
 
       const maxCost = Math.max(...history.map(h => h.total), 1);
+      const todayStr = new Date().toISOString().slice(0, 10);
 
       chartContainer.innerHTML = `
         <div style="display: flex; align-items: flex-end; gap: 0.5rem; height: 200px; width: 100%;">
           ${history.reverse().map(day => {
         const height = (day.total / maxCost) * 100;
+        const isToday = day.date === todayStr;
         return `
-              <div style="flex: 1; display: flex; flex-direction: column; align-items: center;">
-                <div style="width: 100%; height: ${height}%; background: var(--accent-gradient); border-radius: 4px 4px 0 0; min-height: 4px;"></div>
-                <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 0.5rem;">${day.date.slice(5)}</div>
-                <div style="font-size: 0.75rem; font-weight: 600;">$${day.total.toFixed(2)}</div>
+              <div class="chart-bar-wrapper">
+                <div class="chart-bar ${isToday ? 'today' : ''}" style="height: ${height}%; background: var(--accent-gradient);"></div>
+                <div class="chart-date">${day.date.slice(5)}</div>
+                <div class="chart-amount">$${day.total.toFixed(2)}</div>
               </div>
             `;
       }).join('')}
@@ -1227,6 +1314,10 @@ ${JSON.stringify(job.output, null, 2)}
         <div class="toast-title">${this.escapeHtml(title)}</div>
         <div class="toast-message">${this.escapeHtml(message)}</div>
       </div>
+      <button class="toast-close" onclick="this.parentElement.remove()">✕</button>
+      <div class="toast-progress">
+        <div class="toast-progress-bar"></div>
+      </div>
     `;
 
     container.appendChild(toast);
@@ -1278,7 +1369,9 @@ ${JSON.stringify(job.output, null, 2)}
       'RUNNING': 'running',
       'STOPPED': 'stopped',
       'EXITED': 'exited',
-      'CREATED': 'stopped'
+      'CREATED': 'deploying',
+      'DEPLOYING': 'deploying',
+      'TERMINATED': 'exited'
     };
     return map[status] || 'stopped';
   }

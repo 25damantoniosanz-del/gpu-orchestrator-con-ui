@@ -8,12 +8,13 @@ Panel de control centralizado para gestionar infraestructura GPU en RunPod, opti
 ## ✨ Características
 
 - **Gestión de Pods Multi-Tarea**: Soporte para **Image Gen (ComfyUI)** y **Music Gen (HeartMuLa)**
+- **Panel de Conexión**: URLs dinámicas de acceso (ComfyUI, Gradio, Jupyter) con botones Copiar/Abrir
 - **Protección de Costes**: Límites de gasto por pod (auto-kill) y presupuesto global
 - **Endpoints Serverless**: Despliegue sin servidor con escalado automático
 - **Sistema de Cola**: Deduplicación, rate limiting, reintentos con backoff exponencial
 - **Auto-Shutdown**: Apagado automático de recursos inactivos
 - **Benchmarks**: Comparativa de GPUs y filtrado por VRAM (16GB+ para música)
-- **Interfaz Moderna**: Dark mode, glassmorphism, actualizaciones en tiempo real
+- **Interfaz Moderna**: Dark mode, glassmorphism, animaciones de estado, actualizaciones en tiempo real
 - **Ayuda Integrada**: Guías paso a paso y glosario en la app
 
 ## 📋 Requisitos
@@ -58,9 +59,14 @@ Panel de control centralizado para gestionar infraestructura GPU en RunPod, opti
 - Acciones rápidas: crear pod, enviar trabajo, detener todo
 
 ### Pods
-- **Crear Pod**: Selecciona template (ComfyUI, A1111, etc.), GPU y recursos
+- **Crear Pod**: Selecciona template (ComfyUI, HeartMuLa, etc.), GPU y recursos
 - **Gestionar**: Iniciar, detener o eliminar pods existentes
-- Los pods persistentes mantienen tus datos entre reinicios
+- **Panel de Conexión**: Cuando un pod está RUNNING, muestra URLs de acceso:
+  - `🎨 ComfyUI` → Puerto 8188
+  - `🎵 Gradio / HeartMuLa` → Puerto 7860
+  - `📓 Jupyter Lab` → Puerto 8888
+- Formato URL: `https://<POD_ID>-<PUERTO>.proxy.runpod.net`
+- Botones de **Copiar URL** y **Abrir en nueva pestaña** por cada servicio
 
 ### Serverless
 - Ideal para cargas de trabajo con picos

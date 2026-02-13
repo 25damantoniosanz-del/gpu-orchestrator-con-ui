@@ -826,6 +826,11 @@ body::before {
   font-weight: 500;
 }
 
+.resource-detail-value.cost-value {
+  color: var(--success);
+  font-weight: 600;
+}
+
 .resource-actions {
   display: flex;
   gap: 0.5rem;
@@ -835,6 +840,195 @@ body::before {
 
 .resource-actions .btn {
   flex: 1;
+}
+
+/* Pod Card State Borders */
+.resource-card.running-card {
+  border-color: var(--success);
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.15);
+}
+
+.resource-card.deploying-card {
+  border-color: var(--warning);
+  box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);
+}
+
+.resource-card.stopped-card {
+  opacity: 0.75;
+}
+
+/* Pod Card Entrance Animation */
+.pod-card-animate {
+  animation: podCardIn 0.4s ease both;
+}
+
+@keyframes podCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Status Indicator Dot */
+.resource-status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.resource-status.running .status-indicator {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+  animation: statusPulse 2s infinite;
+}
+
+.resource-status.deploying .status-indicator {
+  background: var(--warning);
+  animation: statusBlink 1s infinite;
+}
+
+.resource-status.stopped .status-indicator,
+.resource-status.exited .status-indicator {
+  background: var(--text-muted);
+}
+
+@keyframes statusPulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 4px var(--success);
+  }
+
+  50% {
+    box-shadow: 0 0 12px var(--success);
+  }
+}
+
+@keyframes statusBlink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ===== Connection Panel ===== */
+.connection-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: var(--border-radius-sm);
+}
+
+.connection-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.connection-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--success);
+}
+
+.connection-live-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--success);
+  border-radius: 50%;
+  animation: statusPulse 2s infinite;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.connection-row:first-of-type {
+  border-top: none;
+}
+
+.connection-info {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.connection-icon {
+  font-size: 1.2rem;
+}
+
+.connection-meta {
+  display: flex;
+  flex-direction: column;
+}
+
+.connection-label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.connection-port {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.connection-actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: var(--transition-fast);
+}
+
+.btn-icon:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.btn-copy:hover {
+  border-color: var(--accent-secondary);
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+}
+
+.btn-open:hover {
+  border-color: var(--success);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
 }
 
 /* ===== Queue Stats ===== */
@@ -972,12 +1166,39 @@ body::before {
   border-radius: var(--border-radius-lg);
   padding: 1.5rem;
   text-align: center;
+  transition: var(--transition-normal);
+  position: relative;
+  overflow: hidden;
+}
+
+.cost-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent-gradient);
+  opacity: 0;
+  transition: var(--transition-normal);
+}
+
+.cost-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+  border-color: rgba(124, 58, 237, 0.3);
+}
+
+.cost-card:hover::before {
+  opacity: 1;
 }
 
 .cost-card-header {
   font-size: 0.85rem;
   color: var(--text-muted);
   margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .cost-card-value {
@@ -1004,6 +1225,48 @@ body::before {
 
 .chart-placeholder {
   color: var(--text-muted);
+}
+
+/* Chart Bar Hover */
+.chart-bar-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.chart-bar-wrapper:hover {
+  transform: scaleY(1.03);
+}
+
+.chart-bar {
+  width: 100%;
+  border-radius: 4px 4px 0 0;
+  min-height: 4px;
+  transition: var(--transition-fast);
+  position: relative;
+}
+
+.chart-bar-wrapper:hover .chart-bar {
+  box-shadow: 0 0 12px rgba(124, 58, 237, 0.4);
+}
+
+.chart-bar.today {
+  background: linear-gradient(180deg, var(--success) 0%, #059669 100%) !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.chart-date {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin-top: 0.5rem;
+}
+
+.chart-amount {
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 /* ===== Settings Form ===== */
@@ -1334,16 +1597,19 @@ body::before {
 
 .toast {
   padding: 1rem 1.25rem;
-  background: var(--bg-card);
+  background: rgba(25, 25, 35, 0.95);
+  backdrop-filter: blur(12px);
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
-  min-width: 300px;
-  max-width: 400px;
+  min-width: 320px;
+  max-width: 420px;
   animation: toastSlide 0.3s ease;
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
   box-shadow: var(--shadow-lg);
+  position: relative;
+  overflow: hidden;
 }
 
 @keyframes toastSlide {
@@ -1360,18 +1626,27 @@ body::before {
 
 .toast.success {
   border-color: var(--success);
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(16, 185, 129, 0.15);
 }
 
 .toast.error {
   border-color: var(--error);
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(239, 68, 68, 0.15);
 }
 
 .toast.warning {
   border-color: var(--warning);
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(245, 158, 11, 0.15);
+}
+
+.toast.info {
+  border-color: var(--info);
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(59, 130, 246, 0.15);
 }
 
 .toast-icon {
   font-size: 1.25rem;
+  flex-shrink: 0;
 }
 
 .toast-content {
@@ -1387,6 +1662,63 @@ body::before {
 .toast-message {
   font-size: 0.85rem;
   color: var(--text-secondary);
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.2rem;
+  line-height: 1;
+  transition: var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.toast-close:hover {
+  color: var(--text-primary);
+}
+
+.toast-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.toast-progress-bar {
+  height: 100%;
+  width: 100%;
+  animation: toastCountdown 5s linear forwards;
+}
+
+.toast.success .toast-progress-bar {
+  background: var(--success);
+}
+
+.toast.error .toast-progress-bar {
+  background: var(--error);
+}
+
+.toast.warning .toast-progress-bar {
+  background: var(--warning);
+}
+
+.toast.info .toast-progress-bar {
+  background: var(--info);
+}
+
+@keyframes toastCountdown {
+  from {
+    width: 100%;
+  }
+
+  to {
+    width: 0%;
+  }
 }
 
 /* ===== Loading States ===== */
