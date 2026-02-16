@@ -346,6 +346,187 @@ function buildComfyWorkflow(params) {
     };
 }
 
+// ==================== Pod Workspace Backup ====================
+app.post('/api/pods/:id/backup', asyncHandler(async (req, res) => {
+    const podId = req.params.id;
+
+    // Get pod details
+    const pods = await runpodClient.getPods();
+    const pod = pods.find(p => p.id === podId);
+
+    if (!pod) {
+        return res.status(404).json({ error: 'Pod no encontrado' });
+    }
+
+    if (pod.desiredStatus !== 'RUNNING') {
+        return res.status(400).json({ error: 'El pod debe estar en ejecución (RUNNING) para crear un backup' });
+    }
+
+    // Check runtime is ready (has ports)
+    if (!pod.runtime || !pod.runtime.ports) {
+        return res.status(400).json({ error: 'El pod aún se está iniciando. Espera unos momentos.' });
+    }
+
+    // Determine output directory based on task type
+    const trackedPods = database.getTrackedPods();
+    const trackedPod = trackedPods.find(p => p.id === podId);
+    const taskType = trackedPod?.taskType || 'imageGen';
+    const outputDir = taskType === 'musicGen' ? '/workspace/output' : '/workspace/ComfyUI/output';
+
+    // Use the proxy URL to access Jupyter file API (port 8888)
+    const jupyterUrl = `https://${podId}-8888.proxy.runpod.net`;
+
+    try {
+        // List files via Jupyter contents API
+        const listUrl = `${jupyterUrl}/api/contents${outputDir}?type=directory&_=${Date.now()}`;
+        const listResponse = await fetch(listUrl, {
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(15000)
+        });
+
+        if (!listResponse.ok) {
+            if (listResponse.status === 404) {
+                return res.status(200).json({ error: 'No se encontró el directorio de output. Puede que aún no haya archivos generados.' });
+            }
+            throw new Error(`Error al acceder al pod: ${listResponse.status}`);
+        }
+
+        const listing = await listResponse.json();
+        const files = (listing.content || []).filter(item => item.type === 'file');
+
+        if (files.length === 0) {
+            return res.status(200).json({ error: 'No hay archivos de output para descargar.' });
+        }
+
+        // Set ZIP headers
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="pod-backup-${podId.slice(0, 8)}.zip"`);
+
+        // Build a simple ZIP in memory using Node's built-in facilities
+        // Since we don't have archiver, we'll stream files individually as a tar.gz
+        // Actually let's download files and create a proper response
+        const fileBuffers = [];
+
+        for (const file of files.slice(0, 50)) { // Limit to 50 files
+            try {
+                const fileUrl = `${jupyterUrl}/files${outputDir}/${encodeURIComponent(file.name)}`;
+                const fileResponse = await fetch(fileUrl, {
+                    signal: AbortSignal.timeout(30000)
+                });
+                if (fileResponse.ok) {
+                    const buffer = await fileResponse.arrayBuffer();
+                    fileBuffers.push({
+                        name: file.name,
+                        data: Buffer.from(buffer)
+                    });
+                }
+            } catch (fileError) {
+                console.warn(`Failed to download file ${file.name}:`, fileError.message);
+            }
+        }
+
+        if (fileBuffers.length === 0) {
+            res.removeHeader('Content-Type');
+            res.removeHeader('Content-Disposition');
+            return res.status(200).json({ error: 'No se pudieron descargar los archivos.' });
+        }
+
+        // Create a minimal ZIP file
+        const zipBuffer = createMinimalZip(fileBuffers);
+        res.end(zipBuffer);
+
+    } catch (error) {
+        console.error('Backup error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ error: `Error al crear backup: ${error.message}` });
+        }
+    }
+}));
+
+// Minimal ZIP file creator (no external dependencies)
+function createMinimalZip(files) {
+    const localHeaders = [];
+    const centralHeaders = [];
+    let offset = 0;
+
+    for (const file of files) {
+        const nameBuffer = Buffer.from(file.name, 'utf8');
+        const data = file.data;
+
+        // Local file header (30 bytes + name + data)
+        const local = Buffer.alloc(30 + nameBuffer.length);
+        local.writeUInt32LE(0x04034b50, 0); // Signature
+        local.writeUInt16LE(20, 4);          // Version needed
+        local.writeUInt16LE(0, 6);           // Flags
+        local.writeUInt16LE(0, 8);           // Compression method (none)
+        local.writeUInt16LE(0, 10);          // Mod time
+        local.writeUInt16LE(0, 12);          // Mod date
+        // CRC-32
+        const crc = crc32(data);
+        local.writeUInt32LE(crc, 14);
+        local.writeUInt32LE(data.length, 18); // Compressed size
+        local.writeUInt32LE(data.length, 22); // Uncompressed size
+        local.writeUInt16LE(nameBuffer.length, 26); // Name length
+        local.writeUInt16LE(0, 28);           // Extra field length
+        nameBuffer.copy(local, 30);
+
+        localHeaders.push(Buffer.concat([local, data]));
+
+        // Central directory header (46 bytes + name)
+        const central = Buffer.alloc(46 + nameBuffer.length);
+        central.writeUInt32LE(0x02014b50, 0); // Signature
+        central.writeUInt16LE(20, 4);          // Version made by
+        central.writeUInt16LE(20, 6);          // Version needed
+        central.writeUInt16LE(0, 8);           // Flags
+        central.writeUInt16LE(0, 10);          // Compression
+        central.writeUInt16LE(0, 12);          // Mod time
+        central.writeUInt16LE(0, 14);          // Mod date
+        central.writeUInt32LE(crc, 16);        // CRC-32
+        central.writeUInt32LE(data.length, 20); // Compressed size
+        central.writeUInt32LE(data.length, 24); // Uncompressed size
+        central.writeUInt16LE(nameBuffer.length, 28); // Name length
+        central.writeUInt16LE(0, 30);           // Extra field length
+        central.writeUInt16LE(0, 32);           // Comment length
+        central.writeUInt16LE(0, 34);           // Disk number
+        central.writeUInt16LE(0, 36);           // Internal attributes
+        central.writeUInt32LE(0, 38);           // External attributes
+        central.writeUInt32LE(offset, 42);      // Offset of local header
+        nameBuffer.copy(central, 46);
+
+        centralHeaders.push(central);
+
+        offset += local.length + data.length;
+    }
+
+    const centralDir = Buffer.concat(centralHeaders);
+    const centralDirSize = centralDir.length;
+
+    // End of central directory
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);           // Signature
+    eocd.writeUInt16LE(0, 4);                     // Disk number
+    eocd.writeUInt16LE(0, 6);                     // Start disk
+    eocd.writeUInt16LE(files.length, 8);          // Entries on disk
+    eocd.writeUInt16LE(files.length, 10);         // Total entries
+    eocd.writeUInt32LE(centralDirSize, 12);       // Central dir size
+    eocd.writeUInt32LE(offset, 16);               // Central dir offset
+    eocd.writeUInt16LE(0, 20);                    // Comment length
+
+    return Buffer.concat([...localHeaders, centralDir, eocd]);
+}
+
+// Simple CRC-32 implementation
+function crc32(buf) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) {
+        crc ^= buf[i];
+        for (let j = 0; j < 8; j++) {
+            crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+        }
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
 // ==================== Serverless Endpoints ====================
 app.get('/api/endpoints', asyncHandler(async (req, res) => {
     const endpoints = await serverlessClient.getEndpoints();

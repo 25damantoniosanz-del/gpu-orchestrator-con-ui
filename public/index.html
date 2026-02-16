@@ -22,7 +22,7 @@
           <span class="logo-icon">🚀</span>
           <span class="logo-text">GPU Orchestrator</span>
         </div>
-        <span class="version-badge">v2.0</span>
+        <span class="version-badge">v3.0</span>
       </div>
       <div class="header-center">
         <nav class="nav-tabs">
@@ -36,6 +36,14 @@
         </nav>
       </div>
       <div class="header-right">
+        <div class="mode-toggle-wrapper" id="modeToggle" onclick="app.toggleUIMode()"
+          title="Switch between Easy and Advanced mode">
+          <span class="mode-toggle-label easy-label" id="modeLabelEasy">🟢 Easy</span>
+          <div class="mode-toggle-track">
+            <div class="mode-toggle-thumb"></div>
+          </div>
+          <span class="mode-toggle-label adv-label" id="modeLabelAdv">🔧 Advanced</span>
+        </div>
         <div class="connection-status" id="connectionStatus">
           <span class="status-dot"></span>
           <span class="status-text">Connecting...</span>
@@ -228,7 +236,7 @@
                   <textarea id="promptInput" rows="4"
                     placeholder="A beautiful sunset over the ocean, highly detailed, 8k, masterpiece"></textarea>
                 </div>
-                <div class="form-group">
+                <div class="form-group advanced-only">
                   <label for="negativePrompt">Negative Prompt</label>
                   <textarea id="negativePrompt" rows="2" placeholder="blurry, low quality, distorted"></textarea>
                 </div>
@@ -251,15 +259,15 @@
                       <option value="1280">1280</option>
                     </select>
                   </div>
-                  <div class="form-group">
+                  <div class="form-group advanced-only">
                     <label for="genSteps">Steps</label>
                     <input type="number" id="genSteps" value="20" min="1" max="150">
                   </div>
-                  <div class="form-group">
+                  <div class="form-group advanced-only">
                     <label for="genCfg">CFG Scale</label>
                     <input type="number" id="genCfg" value="7" min="1" max="30" step="0.5">
                   </div>
-                  <div class="form-group">
+                  <div class="form-group advanced-only">
                     <label for="genSampler">Sampler</label>
                     <select id="genSampler">
                       <option value="euler">Euler</option>
@@ -268,9 +276,19 @@
                       <option value="dpmpp_sde">DPM++ SDE</option>
                     </select>
                   </div>
-                  <div class="form-group">
+                  <div class="form-group advanced-only">
                     <label for="genBatch">Batch Size</label>
                     <input type="number" id="genBatch" value="1" min="1" max="8">
+                  </div>
+                </div>
+                <!-- Payload Preview (Advanced Only) -->
+                <div class="payload-preview advanced-only" id="payloadPreview">
+                  <div class="payload-preview-header" onclick="app.togglePayloadPreview()">
+                    <span>📦 Payload Preview</span>
+                    <span id="payloadToggleArrow">▼</span>
+                  </div>
+                  <div class="payload-preview-body" id="payloadPreviewBody">
+                    <pre id="payloadPreviewContent">{}</pre>
                   </div>
                 </div>
                 <button type="submit" class="btn primary generate-btn" id="generateBtn">
@@ -310,11 +328,36 @@
           </button>
         </div>
 
-        <div class="info-box">
+        <div class="info-box advanced-only">
           <strong>💡 Pods vs Serverless:</strong> Use Pods for development, debugging, or when you need persistent
           access.
           They keep running (and billing) until you stop them. Use Serverless for production workloads with automatic
           scaling.
+        </div>
+
+        <!-- Easy Mode: One-click pod creation -->
+        <div class="easy-only" id="easyPodCreator">
+          <div class="card">
+            <h3 class="card-title">🚀 ¿Qué quieres crear?</h3>
+            <div class="easy-tool-selector">
+              <div class="easy-tool-card selected" id="easyToolImages" onclick="app.selectEasyTool('imageGen')">
+                <span class="easy-tool-icon">🎨</span>
+                <span class="easy-tool-name">Generar Imágenes</span>
+                <span class="easy-tool-desc">Crea arte con IA usando Stable Diffusion</span>
+              </div>
+              <div class="easy-tool-card" id="easyToolMusic" onclick="app.selectEasyTool('musicGen')">
+                <span class="easy-tool-icon">🎵</span>
+                <span class="easy-tool-name">Generar Música</span>
+                <span class="easy-tool-desc">Composiciones con IA (requiere GPU potente)</span>
+              </div>
+            </div>
+            <button class="easy-launch-btn" id="easyLaunchBtn" onclick="app.easyLaunchPod()">
+              🚀 ¡Lanzar Máquina!
+            </button>
+            <p class="helper-text" style="text-align:center; margin-top:0.75rem;">
+              Seleccionaremos la mejor GPU automáticamente.
+            </p>
+          </div>
         </div>
 
         <div class="resource-grid" id="podsGrid">

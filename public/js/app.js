@@ -12,12 +12,15 @@ class GPUOrchestrator {
     this.gpus = [];
     this.benchmarks = [];
     this.activity = [];
+    this.uiMode = localStorage.getItem('gpuOrchUIMode') || 'easy';
+    this.easySelectedTool = 'imageGen';
 
     this.init();
   }
 
   // ==================== Initialization ====================
   async init() {
+    this.applyUIMode(this.uiMode);
     this.setupWebSocket();
     this.setupNavigation();
     this.setupEventListeners();
@@ -27,6 +30,104 @@ class GPUOrchestrator {
 
     // Periodic refresh
     setInterval(() => this.refreshAll(), 30000);
+  }
+
+  // ==================== UI Mode Toggle ====================
+  applyUIMode(mode) {
+    this.uiMode = mode;
+    document.body.classList.remove('mode-easy', 'mode-advanced');
+    document.body.classList.add(`mode-${mode}`);
+    localStorage.setItem('gpuOrchUIMode', mode);
+  }
+
+  toggleUIMode() {
+    const newMode = this.uiMode === 'easy' ? 'advanced' : 'easy';
+    this.applyUIMode(newMode);
+    const label = newMode === 'easy' ? '🟢 Modo Fácil activado' : '🔧 Modo Avanzado activado';
+    this.showToast('Modo Cambiado', label, 'info');
+    // If user was on a hidden tab in easy mode, redirect to dashboard
+    if (newMode === 'easy') {
+      const activeTab = document.querySelector('.nav-tab.active');
+      if (activeTab && (activeTab.dataset.tab === 'serverless' || activeTab.dataset.tab === 'jobs')) {
+        this.switchTab('dashboard');
+      }
+    }
+    // Update payload preview if on generate tab
+    this.updatePayloadPreview();
+  }
+
+  // ==================== Easy Mode: Tool Selection & Launch ====================
+  selectEasyTool(tool) {
+    this.easySelectedTool = tool;
+    document.getElementById('easyToolImages')?.classList.toggle('selected', tool === 'imageGen');
+    document.getElementById('easyToolMusic')?.classList.toggle('selected', tool === 'musicGen');
+  }
+
+  async easyLaunchPod() {
+    const btn = document.getElementById('easyLaunchBtn');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ Buscando GPU disponible...';
+
+    try {
+      // Load GPUs if needed
+      if (this.gpus.length === 0) {
+        this.gpus = await this.api('GET', '/gpus');
+      }
+
+      const template = this.builtInTemplates[this.easySelectedTool];
+      const minVram = template.minVram;
+
+      // Auto-select best GPU: cheapest available with enough VRAM, prefer 24GB+
+      const candidates = this.gpus
+        .filter(g => (g.communityCloud || g.secureCloud) && g.displayName)
+        .filter(g => (g.memoryInGb || 0) >= minVram)
+        .sort((a, b) => {
+          // Prefer 24GB+ GPUs, then sort by price
+          const aGood = (a.memoryInGb || 0) >= 24 ? 0 : 1;
+          const bGood = (b.memoryInGb || 0) >= 24 ? 0 : 1;
+          if (aGood !== bGood) return aGood - bGood;
+          return (a.communityPrice || a.securePrice || 999) - (b.communityPrice || b.securePrice || 999);
+        });
+
+      if (candidates.length === 0) {
+        throw new Error('No hay GPUs disponibles con suficiente VRAM. Intenta más tarde.');
+      }
+
+      const bestGpu = candidates[0];
+      const toolName = this.easySelectedTool === 'imageGen' ? 'Imágenes' : 'Música';
+      const podName = `easy-${this.easySelectedTool === 'imageGen' ? 'img' : 'music'}-${Date.now().toString(36)}`;
+
+      const data = {
+        name: podName,
+        gpuTypeId: bestGpu.id,
+        volumeInGb: template.defaultVolume,
+        containerDiskInGb: template.defaultContainerDisk,
+        cloudType: 'ALL',
+        taskType: this.easySelectedTool,
+        port: template.port,
+        spendingLimit: 2 // $2 safety limit for easy mode
+      };
+
+      if (template.templateId) {
+        data.templateId = template.templateId;
+      } else {
+        data.imageName = template.imageName;
+      }
+
+      await this.api('POST', '/pods', data);
+      const price = (bestGpu.communityPrice || bestGpu.securePrice || 0).toFixed(3);
+      this.showToast('🚀 ¡Máquina Lanzada!',
+        `${toolName} con ${bestGpu.displayName} ($${price}/hr). Límite: $2.00`,
+        'success');
+      await this.loadPods();
+      this.switchTab('pods');
+    } catch (error) {
+      this.showToast('Error', error.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🚀 ¡Lanzar Máquina!';
+    }
   }
 
   setupWebSocket() {
@@ -295,7 +396,8 @@ class GPUOrchestrator {
 
         <div class="resource-actions">
           ${isRunning ?
-          `<button class="btn sm warning" onclick="app.stopPod('${pod.id}')">⏹️ Stop</button>` :
+          `<button class="btn sm btn-backup" onclick="event.stopPropagation(); app.backupPodWorkspace('${pod.id}')" title="Descargar archivos generados">💾 Backup</button>
+           <button class="btn sm warning" onclick="app.stopPod('${pod.id}')">⏹️ Stop</button>` :
           `<button class="btn sm primary" onclick="app.startPod('${pod.id}')">▶️ Start</button>`
         }
           <button class="btn sm danger" onclick="app.terminatePod('${pod.id}')">🗑️ Delete</button>
@@ -1621,6 +1723,103 @@ ${JSON.stringify(job.output, null, 2)}
     a.download = filename;
     a.target = '_blank';
     a.click();
+  }
+
+  // ==================== Workspace Backup ====================
+  async backupPodWorkspace(podId) {
+    // Find the pod
+    const pod = this.pods.find(p => p.id === podId);
+    if (!pod) {
+      this.showToast('Error', 'Pod no encontrado', 'error');
+      return;
+    }
+
+    if (pod.desiredStatus !== 'RUNNING') {
+      this.showToast('Error', 'El pod debe estar en ejecución para hacer backup', 'error');
+      return;
+    }
+
+    // Find the backup button and show loading state
+    const btns = document.querySelectorAll('.btn-backup');
+    let targetBtn = null;
+    btns.forEach(btn => {
+      if (btn.onclick && btn.getAttribute('onclick')?.includes(podId)) {
+        targetBtn = btn;
+      }
+    });
+    if (targetBtn) {
+      targetBtn.disabled = true;
+      targetBtn.classList.add('loading');
+      targetBtn.textContent = '⏳';
+    }
+
+    try {
+      this.showToast('📦 Backup en progreso', 'Comprimiendo archivos del workspace...', 'info');
+
+      const response = await fetch(`/api/pods/${podId}/backup`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Error al crear backup');
+      }
+
+      // Download the ZIP
+      const blob = await response.blob();
+      if (blob.size < 100) {
+        this.showToast('⚠️ Backup vacío', 'No se encontraron archivos de output en el workspace', 'warning');
+        return;
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pod-backup-${podId.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      this.showToast('✅ Backup completado', 'Los archivos se están descargando', 'success');
+    } catch (error) {
+      this.showToast('Error de Backup', error.message, 'error');
+    } finally {
+      if (targetBtn) {
+        targetBtn.disabled = false;
+        targetBtn.classList.remove('loading');
+        targetBtn.textContent = '💾 Backup';
+      }
+    }
+  }
+
+  // ==================== Payload Preview ====================
+  updatePayloadPreview() {
+    const previewContent = document.getElementById('payloadPreviewContent');
+    if (!previewContent) return;
+
+    const params = {
+      prompt: document.getElementById('promptInput')?.value || '',
+      negative_prompt: document.getElementById('negativePrompt')?.value || '',
+      width: parseInt(document.getElementById('genWidth')?.value) || 1024,
+      height: parseInt(document.getElementById('genHeight')?.value) || 1024,
+      steps: parseInt(document.getElementById('genSteps')?.value) || 20,
+      cfg_scale: parseFloat(document.getElementById('genCfg')?.value) || 7,
+      sampler: document.getElementById('genSampler')?.value || 'dpmpp_2m',
+      batch_size: parseInt(document.getElementById('genBatch')?.value) || 1
+    };
+
+    previewContent.textContent = JSON.stringify(params, null, 2);
+  }
+
+  togglePayloadPreview() {
+    const body = document.getElementById('payloadPreviewBody');
+    const arrow = document.getElementById('payloadToggleArrow');
+    if (!body || !arrow) return;
+
+    body.classList.toggle('collapsed');
+    arrow.textContent = body.classList.contains('collapsed') ? '▶' : '▼';
+    this.updatePayloadPreview();
   }
 }
 
