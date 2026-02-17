@@ -14,6 +14,9 @@ class GPUOrchestrator {
     this.activity = [];
     this.uiMode = localStorage.getItem('gpuOrchUIMode') || 'easy';
     this.easySelectedTool = 'imageGen';
+    this.workflows = [];
+    this.selectedWorkflowId = 'image_sdxl_default';
+    this.generatedVideos = [];
 
     this.init();
   }
@@ -205,6 +208,16 @@ class GPUOrchestrator {
       case 'pod:auto-stop-failed':
       case 'pod:terminate-failed':
         this.showToast('Error', `No se pudo detener el pod: ${eventData.error}`, 'error');
+        break;
+      case 'batch:progress':
+        this.handleBatchProgress(eventData);
+        break;
+      case 'batch:complete':
+        this.handleBatchComplete(eventData);
+        break;
+      case 'batch:error':
+        this.showToast('Batch Error', eventData.error, 'error');
+        this.hideBatchProgress();
         break;
     }
   }
@@ -1485,9 +1498,55 @@ ${JSON.stringify(job.output, null, 2)}
   generatedImages = [];
 
   async refreshGenerateOptions() {
-    await Promise.all([this.loadPods(), this.loadEndpoints()]);
+    await Promise.all([this.loadPods(), this.loadEndpoints(), this.loadWorkflows()]);
     this.updateGeneratePodSelect();
     this.updateGenerateEndpointSelect();
+  }
+
+  // ==================== Workflow Management ====================
+  async loadWorkflows() {
+    try {
+      this.workflows = await this.api('GET', '/workflows');
+      this.updateWorkflowSelect();
+    } catch (error) {
+      console.error('Error loading workflows:', error);
+    }
+  }
+
+  updateWorkflowSelect() {
+    const select = document.getElementById('workflowSelect');
+    if (!select) return;
+
+    select.innerHTML = this.workflows.map(wf => `
+      <option value="${wf.id}" ${wf.id === this.selectedWorkflowId ? 'selected' : ''}>
+        ${this.escapeHtml(wf.name)}
+      </option>
+    `).join('');
+  }
+
+  onWorkflowChange(workflowId) {
+    this.selectedWorkflowId = workflowId;
+    const wf = this.workflows.find(w => w.id === workflowId);
+
+    // Update description
+    const descEl = document.getElementById('workflowDescription');
+    if (descEl && wf) descEl.textContent = wf.description;
+
+    // Show/hide video fields
+    const isVideo = wf?.category === 'video' || wf?.hasVideo;
+    document.querySelectorAll('.video-only-field').forEach(el => {
+      el.style.display = isVideo ? 'block' : 'none';
+    });
+    const batchGroup = document.getElementById('batchSizeGroup');
+    if (batchGroup) batchGroup.style.display = isVideo ? 'none' : '';
+
+    // Update generate button label
+    const btn = document.getElementById('generateBtn');
+    if (btn) {
+      btn.innerHTML = isVideo ? '🎬 Generate Video' : '🎨 Generate Image';
+    }
+
+    this.updatePayloadPreview();
   }
 
   switchGenerateSource(source) {
@@ -1629,43 +1688,60 @@ ${JSON.stringify(job.output, null, 2)}
     }
 
     const btn = document.getElementById('generateBtn');
+    const wf = this.workflows.find(w => w.id === this.selectedWorkflowId);
+    const isVideo = wf?.category === 'video' || wf?.hasVideo;
+
     btn.disabled = true;
     btn.classList.add('loading');
-    btn.innerHTML = '🔄 Generating...';
+    btn.innerHTML = isVideo ? '🔄 Generating Video...' : '🔄 Generating...';
 
     const params = {
       prompt: document.getElementById('promptInput').value,
-      negative_prompt: document.getElementById('negativePrompt').value,
+      negative_prompt: document.getElementById('negativePrompt')?.value || '',
       width: parseInt(document.getElementById('genWidth').value),
       height: parseInt(document.getElementById('genHeight').value),
       steps: parseInt(document.getElementById('genSteps').value),
       cfg_scale: parseFloat(document.getElementById('genCfg').value),
       sampler: document.getElementById('genSampler').value,
-      batch_size: parseInt(document.getElementById('genBatch').value)
+      batch_size: parseInt(document.getElementById('genBatch').value),
+      workflowId: this.selectedWorkflowId
     };
+
+    // Add video-specific params
+    if (isVideo) {
+      params.frames = parseInt(document.getElementById('genFrames')?.value || 16);
+      params.fps = parseInt(document.getElementById('genFps')?.value || 8);
+    }
 
     try {
       let result;
 
       if (this.generationSource === 'endpoint') {
-        // Generate via serverless endpoint
         result = await this.api('POST', `/endpoints/${this.selectedEndpoint.id}/generate`, params);
       } else {
-        // Generate via pod
         result = await this.api('POST', `/pods/${this.selectedPod.id}/generate`, params);
       }
 
+      // Handle GIF/video results
+      if (result.gifs && result.gifs.length > 0) {
+        this.generatedVideos = [...result.gifs, ...this.generatedVideos];
+        this.renderGeneratedVideos();
+        this.showToast('Video Generated!', `${result.gifs.length} video(s) created`, 'success');
+      }
+
+      // Handle image results
       if (result.images && result.images.length > 0) {
         this.generatedImages = [...result.images, ...this.generatedImages];
         this.renderGeneratedImages();
         this.showToast('Images Generated!', `${result.images.length} image(s) created`, 'success');
       } else if (result.output) {
-        // Handle base64 or URL output from serverless
         const images = Array.isArray(result.output) ? result.output : [result.output];
         this.generatedImages = [...images.map(img => ({ url: img })), ...this.generatedImages];
         this.renderGeneratedImages();
         this.showToast('Images Generated!', `${images.length} image(s) created`, 'success');
-      } else {
+      }
+
+      if ((!result.images || result.images.length === 0) && (!result.gifs || result.gifs.length === 0) && !result.output) {
         this.showToast('Generation Complete', 'Check the output for results', 'info');
       }
     } catch (error) {
@@ -1673,7 +1749,7 @@ ${JSON.stringify(job.output, null, 2)}
     } finally {
       btn.disabled = false;
       btn.classList.remove('loading');
-      btn.innerHTML = '🎨 Generate Image';
+      btn.innerHTML = isVideo ? '🎬 Generate Video' : '🎨 Generate Image';
     }
   }
 
@@ -1684,7 +1760,7 @@ ${JSON.stringify(job.output, null, 2)}
       container.innerHTML = `
         <div class="empty-state">
           <div class="empty-state-icon">🎨</div>
-          <p class="empty-state-text">Generated images will appear here</p>
+          <p class="empty-state-text">Generated media will appear here</p>
         </div>
       `;
       return;
@@ -1699,6 +1775,121 @@ ${JSON.stringify(job.output, null, 2)}
         </div>
       </div>
     `).join('');
+  }
+
+  renderGeneratedVideos() {
+    const container = document.getElementById('generatedVideos');
+    const gallery = document.getElementById('videoGallery');
+    if (!container || !gallery) return;
+
+    if (this.generatedVideos.length === 0) {
+      container.style.display = 'none';
+      return;
+    }
+
+    container.style.display = 'block';
+    gallery.innerHTML = this.generatedVideos.map((gif, i) => `
+      <div class="generated-video-item">
+        <img src="${gif.url || gif}" alt="Generated GIF ${i + 1}" loading="lazy">
+        <div class="generated-image-overlay">
+          <button onclick="app.downloadImage('${gif.url || gif}', 'video_${i}.gif')">💾</button>
+          <button onclick="window.open('${gif.url || gif}', '_blank')">🔗</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ==================== Batch Processing ====================
+  async startBatch() {
+    const textarea = document.getElementById('batchPrompts');
+    const promptsText = textarea?.value?.trim();
+    if (!promptsText) {
+      this.showToast('No Prompts', 'Escribe al menos un prompt para batch', 'error');
+      return;
+    }
+
+    if (this.generationSource === 'pod' && !this.selectedPod) {
+      this.showToast('No Pod Selected', 'Selecciona un pod primero', 'error');
+      return;
+    }
+
+    if (this.generationSource === 'endpoint') {
+      this.showToast('Not Supported', 'Batch processing solo funciona con pods (por ahora)', 'error');
+      return;
+    }
+
+    const prompts = promptsText.split('\n').filter(p => p.trim());
+    if (prompts.length === 0) return;
+
+    const btn = document.getElementById('batchBtn');
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Procesando...';
+
+    // Show progress bar
+    this.showBatchProgress(0, prompts.length, '');
+
+    try {
+      const params = {
+        steps: parseInt(document.getElementById('genSteps')?.value || 20),
+        cfg_scale: parseFloat(document.getElementById('genCfg')?.value || 7),
+        width: parseInt(document.getElementById('genWidth')?.value || 1024),
+        height: parseInt(document.getElementById('genHeight')?.value || 1024),
+        sampler: document.getElementById('genSampler')?.value || 'euler',
+        negative_prompt: document.getElementById('negativePrompt')?.value || ''
+      };
+
+      await this.api('POST', `/pods/${this.selectedPod.id}/batch`, {
+        prompts,
+        workflowId: this.selectedWorkflowId,
+        params
+      });
+
+      this.showToast('Batch Iniciado', `${prompts.length} prompts en cola. Progreso via WebSocket.`, 'info');
+    } catch (error) {
+      this.showToast('Batch Error', error.message, 'error');
+      this.hideBatchProgress();
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '🚀 Lanzar Batch';
+    }
+  }
+
+  showBatchProgress(current, total, promptText) {
+    const el = document.getElementById('batchProgress');
+    if (!el) return;
+    el.style.display = 'block';
+
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    document.getElementById('batchProgressText').textContent = `Procesando ${current}/${total}...`;
+    document.getElementById('batchProgressPercent').textContent = `${pct}%`;
+    document.getElementById('batchProgressBar').style.width = `${pct}%`;
+    document.getElementById('batchCurrentPrompt').textContent = promptText;
+  }
+
+  hideBatchProgress() {
+    const el = document.getElementById('batchProgress');
+    if (el) el.style.display = 'none';
+  }
+
+  handleBatchProgress(data) {
+    this.showBatchProgress(data.current, data.total, data.prompt);
+  }
+
+  handleBatchComplete(data) {
+    this.hideBatchProgress();
+    this.showToast('Batch Completado',
+      `✅ ${data.completed} completados, ❌ ${data.failed} fallidos de ${data.total}`,
+      data.failed > 0 ? 'warning' : 'success');
+
+    // Add results to gallery
+    if (data.results) {
+      for (const r of data.results) {
+        if (r.images) this.generatedImages = [...r.images, ...this.generatedImages];
+        if (r.gifs) this.generatedVideos = [...r.gifs, ...this.generatedVideos];
+      }
+      this.renderGeneratedImages();
+      this.renderGeneratedVideos();
+    }
   }
 
   viewImage(url) {

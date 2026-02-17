@@ -11,6 +11,7 @@ import { costTracker } from './services/cost-tracker.js';
 import { autoShutdown } from './services/auto-shutdown.js';
 import { database } from './db/database.js';
 import { sanitizer } from './utils/sanitizer.js';
+import { workflowEngine } from './services/workflow-engine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -168,22 +169,29 @@ app.delete('/api/pods/:id', asyncHandler(async (req, res) => {
     res.json({ success: true });
 }));
 
-// ==================== Image Generation (via Pod) ====================
-app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
-    const podId = req.params.id;
-    const params = req.body;
+// ==================== Workflows API ====================
+app.get('/api/workflows', asyncHandler(async (req, res) => {
+    const workflows = workflowEngine.listWorkflows();
+    res.json(workflows);
+}));
 
-    // Get pod details to find ComfyUI endpoint
+app.post('/api/workflows/upload', asyncHandler(async (req, res) => {
+    const { name, workflow } = req.body;
+    if (!name || !workflow) {
+        return res.status(400).json({ error: 'Name and workflow JSON are required' });
+    }
+    const result = workflowEngine.saveCustomWorkflow(name, workflow);
+    res.status(201).json(result);
+}));
+
+// ==================== Image/Video Generation (via Pod) ====================
+
+// Helper: resolve ComfyUI URL from a pod
+async function resolveComfyUrl(podId) {
     const pod = await runpodClient.getPod(podId);
-    if (!pod) {
-        return res.status(404).json({ error: 'Pod not found' });
-    }
+    if (!pod) throw { status: 404, message: 'Pod not found' };
+    if (pod.desiredStatus !== 'RUNNING') throw { status: 400, message: 'Pod is not running' };
 
-    if (pod.desiredStatus !== 'RUNNING') {
-        return res.status(400).json({ error: 'Pod is not running' });
-    }
-
-    // Find ComfyUI port (usually 8188)
     let comfyUrl = null;
     if (pod.runtime && pod.runtime.ports) {
         const httpPort = pod.runtime.ports.find(p => p.privatePort === 8188 || p.privatePort === 3000);
@@ -191,62 +199,82 @@ app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
             comfyUrl = `http://${httpPort.ip}:${httpPort.publicPort}`;
         }
     }
-
     if (!comfyUrl) {
-        return res.status(400).json({
-            error: 'ComfyUI endpoint not found. Pod may still be starting up.',
-            podStatus: pod.desiredStatus,
-            ports: pod.runtime?.ports || []
-        });
+        throw { status: 400, message: 'ComfyUI endpoint not found. Pod may still be starting up.' };
+    }
+    return { pod, comfyUrl };
+}
+
+// Helper: send a workflow to ComfyUI and poll for results
+async function executeWorkflowOnPod(comfyUrl, workflow, timeoutMs = 180000) {
+    const queueResponse = await fetch(`${comfyUrl}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow })
+    });
+
+    if (!queueResponse.ok) {
+        const errText = await queueResponse.text().catch(() => '');
+        throw new Error(`Failed to queue prompt in ComfyUI: ${errText}`);
     }
 
-    // Build ComfyUI workflow
-    const workflow = buildComfyWorkflow(params);
+    const queueResult = await queueResponse.json();
+    const promptId = queueResult.prompt_id;
 
-    try {
-        // Queue the prompt
-        const queueResponse = await fetch(`${comfyUrl}/prompt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: workflow })
-        });
+    // Poll for completion
+    let completed = false;
+    let results = { images: [], gifs: [] };
+    const startTime = Date.now();
 
-        if (!queueResponse.ok) {
-            throw new Error('Failed to queue prompt in ComfyUI');
-        }
+    while (!completed && (Date.now() - startTime) < timeoutMs) {
+        await new Promise(r => setTimeout(r, 2000));
 
-        const queueResult = await queueResponse.json();
-        const promptId = queueResult.prompt_id;
-
-        // Poll for completion (max 2 minutes)
-        let completed = false;
-        let images = [];
-        const startTime = Date.now();
-        const timeout = 120000; // 2 minutes
-
-        while (!completed && (Date.now() - startTime) < timeout) {
-            await new Promise(r => setTimeout(r, 2000)); // Wait 2 seconds
-
-            const historyResponse = await fetch(`${comfyUrl}/history/${promptId}`);
-            if (historyResponse.ok) {
-                const history = await historyResponse.json();
-                if (history[promptId] && history[promptId].outputs) {
-                    completed = true;
-                    // Extract images from outputs
-                    for (const nodeId in history[promptId].outputs) {
-                        const output = history[promptId].outputs[nodeId];
-                        if (output.images) {
-                            for (const img of output.images) {
-                                images.push({
-                                    url: `${comfyUrl}/view?filename=${img.filename}&subfolder=${img.subfolder || ''}&type=${img.type || 'output'}`,
-                                    filename: img.filename
-                                });
-                            }
+        const historyResponse = await fetch(`${comfyUrl}/history/${promptId}`);
+        if (historyResponse.ok) {
+            const history = await historyResponse.json();
+            if (history[promptId] && history[promptId].outputs) {
+                completed = true;
+                for (const nodeId in history[promptId].outputs) {
+                    const output = history[promptId].outputs[nodeId];
+                    if (output.images) {
+                        for (const img of output.images) {
+                            results.images.push({
+                                url: `${comfyUrl}/view?filename=${img.filename}&subfolder=${img.subfolder || ''}&type=${img.type || 'output'}`,
+                                filename: img.filename
+                            });
+                        }
+                    }
+                    if (output.gifs) {
+                        for (const gif of output.gifs) {
+                            results.gifs.push({
+                                url: `${comfyUrl}/view?filename=${gif.filename}&subfolder=${gif.subfolder || ''}&type=${gif.type || 'output'}`,
+                                filename: gif.filename
+                            });
                         }
                     }
                 }
             }
         }
+    }
+
+    return { completed, promptId, results };
+}
+
+// Original generate endpoint (backwards compatible)
+app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
+    const podId = req.params.id;
+    const params = req.body;
+
+    try {
+        const { comfyUrl } = await resolveComfyUrl(podId);
+        const workflowId = params.workflowId || 'image_sdxl_default';
+        const workflow = workflowEngine.buildPrompt(workflowId, params);
+        const isVideo = workflowEngine.getWorkflow(workflowId)?.category === 'video' ||
+            workflowEngine.getWorkflow(workflowId)?.hasVideo;
+
+        const { completed, promptId, results } = await executeWorkflowOnPod(
+            comfyUrl, workflow, isVideo ? 300000 : 120000
+        );
 
         if (!completed) {
             return res.json({
@@ -256,95 +284,113 @@ app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
             });
         }
 
-        // Update pod activity
         database.updatePodActivity(podId);
 
         res.json({
             status: 'completed',
-            images,
-            promptId
+            images: results.images,
+            gifs: results.gifs,
+            promptId,
+            workflowId
         });
-
     } catch (error) {
+        if (error.status) {
+            return res.status(error.status).json({ error: error.message });
+        }
         console.error('Generation error:', error);
         res.status(500).json({ error: error.message });
     }
 }));
 
-// Helper function to build ComfyUI workflow
-function buildComfyWorkflow(params) {
-    const {
-        prompt = '',
-        negative_prompt = '',
-        width = 1024,
-        height = 1024,
-        steps = 20,
-        cfg_scale = 7,
-        sampler = 'euler',
-        batch_size = 1
-    } = params;
+// ==================== Batch Generation (via Pod) ====================
+app.post('/api/pods/:id/batch', asyncHandler(async (req, res) => {
+    const podId = req.params.id;
+    const { prompts, workflowId = 'image_sdxl_default', params = {} } = req.body;
 
-    // Basic SDXL workflow
-    return {
-        "3": {
-            "class_type": "KSampler",
-            "inputs": {
-                "cfg": cfg_scale,
-                "denoise": 1,
-                "latent_image": ["5", 0],
-                "model": ["4", 0],
-                "negative": ["7", 0],
-                "positive": ["6", 0],
-                "sampler_name": sampler,
-                "scheduler": "normal",
-                "seed": Math.floor(Math.random() * 1000000000),
-                "steps": steps
+    if (!prompts || !Array.isArray(prompts) || prompts.length === 0) {
+        return res.status(400).json({ error: 'An array of prompts is required' });
+    }
+
+    if (prompts.length > 100) {
+        return res.status(400).json({ error: 'Maximum 100 prompts per batch' });
+    }
+
+    try {
+        const { comfyUrl } = await resolveComfyUrl(podId);
+        const wf = workflowEngine.getWorkflow(workflowId);
+        const isVideo = wf?.category === 'video' || wf?.hasVideo;
+
+        // Start batch in the background — send a start response immediately
+        res.json({
+            status: 'batch_started',
+            total: prompts.length,
+            workflowId,
+            message: `Batch of ${prompts.length} prompts queued. Progress via WebSocket.`
+        });
+
+        // Process sequentially in background and broadcast progress via WebSocket
+        const allResults = [];
+        for (let i = 0; i < prompts.length; i++) {
+            const promptText = prompts[i].trim();
+            if (!promptText) continue;
+
+            // Broadcast progress
+            queueManager.broadcast('batch:progress', {
+                podId,
+                current: i + 1,
+                total: prompts.length,
+                prompt: promptText.substring(0, 80),
+                status: 'generating'
+            });
+
+            try {
+                const workflow = workflowEngine.buildPrompt(workflowId, {
+                    ...params,
+                    prompt: promptText
+                });
+                const { completed, results } = await executeWorkflowOnPod(
+                    comfyUrl, workflow, isVideo ? 300000 : 120000
+                );
+                allResults.push({
+                    index: i,
+                    prompt: promptText.substring(0, 80),
+                    status: completed ? 'completed' : 'timeout',
+                    images: results.images,
+                    gifs: results.gifs
+                });
+            } catch (err) {
+                allResults.push({
+                    index: i,
+                    prompt: promptText.substring(0, 80),
+                    status: 'error',
+                    error: err.message
+                });
             }
-        },
-        "4": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {
-                "ckpt_name": "sd_xl_base_1.0.safetensors"
-            }
-        },
-        "5": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {
-                "batch_size": batch_size,
-                "height": height,
-                "width": width
-            }
-        },
-        "6": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": ["4", 1],
-                "text": prompt
-            }
-        },
-        "7": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": ["4", 1],
-                "text": negative_prompt
-            }
-        },
-        "8": {
-            "class_type": "VAEDecode",
-            "inputs": {
-                "samples": ["3", 0],
-                "vae": ["4", 2]
-            }
-        },
-        "9": {
-            "class_type": "SaveImage",
-            "inputs": {
-                "filename_prefix": "ComfyUI",
-                "images": ["8", 0]
-            }
+
+            database.updatePodActivity(podId);
         }
-    };
-}
+
+        // Broadcast batch complete
+        queueManager.broadcast('batch:complete', {
+            podId,
+            total: prompts.length,
+            completed: allResults.filter(r => r.status === 'completed').length,
+            failed: allResults.filter(r => r.status === 'error').length,
+            results: allResults
+        });
+
+    } catch (error) {
+        if (error.status) {
+            // Already sent response, broadcast error via WebSocket
+            queueManager.broadcast('batch:error', {
+                podId,
+                error: error.message
+            });
+            return;
+        }
+        console.error('Batch error:', error);
+    }
+}))
 
 // ==================== Pod Workspace Backup ====================
 app.post('/api/pods/:id/backup', asyncHandler(async (req, res) => {

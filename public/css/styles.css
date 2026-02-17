@@ -2611,3 +2611,122 @@ body.mode-advanced .version-badge {
   border-color: var(--accent-primary);
   color: var(--accent-primary);
 }
+
+/* ===== Workflow Selector & Video Fields ===== */
+#workflowDescription {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.video-only-field label {
+  color: var(--info);
+}
+
+/* ===== Batch Processing ===== */
+.batch-card {
+  border-color: rgba(124, 58, 237, 0.25);
+}
+
+.batch-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.batch-count {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.batch-progress {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: var(--bg-glass);
+  border-radius: var(--border-radius-sm);
+}
+
+.batch-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.progress-fill.batch-fill {
+  background: linear-gradient(135deg, #7c3aed 0%, #10b981 100%);
+  transition: width 0.6s ease;
+}
+
+.batch-current-prompt {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Video Gallery ===== */
+.generated-videos {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.generated-videos h4 {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.video-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.generated-video-item {
+  position: relative;
+  border-radius: var(--border-radius);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background: var(--bg-glass);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+}
+
+.generated-video-item:hover {
+  border-color: var(--info);
+  transform: scale(1.02);
+  box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+}
+
+.generated-video-item img {
+  width: 100%;
+  display: block;
+  object-fit: cover;
+  aspect-ratio: 1;
+}
+
+.generated-video-item .generated-image-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.5rem;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.generated-video-item:hover .generated-image-overlay {
+  opacity: 1;
+}

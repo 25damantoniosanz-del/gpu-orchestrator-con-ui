@@ -176,7 +176,7 @@
       <!-- Generate Tab -->
       <section class="tab-content" id="tab-generate">
         <div class="tab-header">
-          <h2>🎨 Image Generation</h2>
+          <h2>🎨 AI Generation Studio</h2>
           <button class="btn" onclick="app.refreshGenerateOptions()">
             <span>🔄</span> Refresh
           </button>
@@ -229,7 +229,18 @@
           <!-- Generation Interface -->
           <div class="generate-interface" id="generateInterface" style="display: none;">
             <div class="card generate-form-card">
-              <h3 class="card-title">✨ Generate Image</h3>
+              <h3 class="card-title">✨ Generate</h3>
+
+              <!-- Workflow Selector -->
+              <div class="form-group">
+                <label for="workflowSelect">Workflow / Motor</label>
+                <select id="workflowSelect" onchange="app.onWorkflowChange(this.value)">
+                  <option value="image_sdxl_default">🎨 Imagen SDXL (Default)</option>
+                </select>
+                <span class="helper-text" id="workflowDescription">Generación de imágenes con Stable Diffusion
+                  XL.</span>
+              </div>
+
               <form onsubmit="app.generateImage(event)">
                 <div class="form-group">
                   <label for="promptInput">Prompt</label>
@@ -276,9 +287,18 @@
                       <option value="dpmpp_sde">DPM++ SDE</option>
                     </select>
                   </div>
-                  <div class="form-group advanced-only">
+                  <div class="form-group advanced-only" id="batchSizeGroup">
                     <label for="genBatch">Batch Size</label>
                     <input type="number" id="genBatch" value="1" min="1" max="8">
+                  </div>
+                  <!-- Video-specific fields -->
+                  <div class="form-group video-only-field" id="framesGroup" style="display:none;">
+                    <label for="genFrames">Frames</label>
+                    <input type="number" id="genFrames" value="16" min="4" max="64">
+                  </div>
+                  <div class="form-group video-only-field" id="fpsGroup" style="display:none;">
+                    <label for="genFps">FPS</label>
+                    <input type="number" id="genFps" value="8" min="4" max="30">
                   </div>
                 </div>
                 <!-- Payload Preview (Advanced Only) -->
@@ -292,18 +312,52 @@
                   </div>
                 </div>
                 <button type="submit" class="btn primary generate-btn" id="generateBtn">
-                  🎨 Generate Image
+                  🎨 Generate
                 </button>
               </form>
             </div>
 
-            <!-- Generated Images -->
+            <!-- Batch Processing Panel -->
+            <div class="card batch-card advanced-only">
+              <h3 class="card-title">📦 Batch Processing</h3>
+              <p class="helper-text">Pega múltiples prompts (uno por línea) para generar en lote.</p>
+              <div class="form-group">
+                <label for="batchPrompts">Prompts (uno por línea)</label>
+                <textarea id="batchPrompts" rows="6"
+                  placeholder="Un samurái robótico bajo la lluvia de neón&#10;Una hacker con implantes cibernéticos&#10;Un mercado callejero flotante en una ciudad futurista"></textarea>
+              </div>
+              <div class="batch-controls">
+                <span class="batch-count" id="batchCount">0 prompts</span>
+                <button class="btn primary" id="batchBtn" onclick="app.startBatch()">
+                  🚀 Lanzar Batch
+                </button>
+              </div>
+              <!-- Batch Progress -->
+              <div class="batch-progress" id="batchProgress" style="display:none;">
+                <div class="batch-progress-header">
+                  <span id="batchProgressText">Procesando 0/0...</span>
+                  <span id="batchProgressPercent">0%</span>
+                </div>
+                <div class="progress-bar">
+                  <div class="progress-fill batch-fill" id="batchProgressBar" style="width: 0%"></div>
+                </div>
+                <div class="batch-current-prompt" id="batchCurrentPrompt"></div>
+              </div>
+            </div>
+
+            <!-- Generated Media Gallery -->
             <div class="card generated-images-card">
-              <h3 class="card-title">🖼️ Generated Images</h3>
+              <h3 class="card-title">🖼️ Generated Media</h3>
+              <!-- Video/GIF results -->
+              <div class="generated-videos" id="generatedVideos" style="display:none;">
+                <h4 style="margin-bottom: 0.5rem;">🎬 Videos / GIFs</h4>
+                <div class="video-gallery" id="videoGallery"></div>
+              </div>
+              <!-- Image results -->
               <div class="generated-images" id="generatedImages">
                 <div class="empty-state">
                   <div class="empty-state-icon">🎨</div>
-                  <p class="empty-state-text">Generated images will appear here</p>
+                  <p class="empty-state-text">Generated media will appear here</p>
                 </div>
               </div>
             </div>
@@ -312,7 +366,7 @@
           <!-- No Source Selected State -->
           <div class="empty-state" id="noSourceSelected">
             <div class="empty-state-icon">☁️</div>
-            <p class="empty-state-text">Select an endpoint or pod to start generating images</p>
+            <p class="empty-state-text">Select an endpoint or pod to start generating</p>
             <p class="helper-text">Use serverless endpoints for pay-per-use, or a running pod for direct access</p>
           </div>
         </div>

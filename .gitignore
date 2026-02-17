@@ -19,3 +19,13 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# AI Agent workspace
+.gemini/
+
+# Tutor report (no subir)
+INFORME_TUTOR_FUSION.md
+
+# Generated outputs
+output/
+generated/

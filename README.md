@@ -1,21 +1,30 @@
 # 🚀 GPU Orchestrator - RunPod Control Panel
 
-Panel de control centralizado para gestionar infraestructura GPU en RunPod, optimizado para generación masiva de imágenes y vídeo.
+Panel de control centralizado para gestionar infraestructura GPU en RunPod, optimizado para generación masiva de imágenes y vídeo con IA.
+
+> **v4.0 — Fusión**: Ahora integra las funcionalidades del proyecto [Zaragoza Maker](proyecto_companeros/) (workflows dinámicos, generación de vídeo y procesamiento batch).
 
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
 ## ✨ Características
 
+### Core
 - **Gestión de Pods Multi-Tarea**: Soporte para **Image Gen (ComfyUI)** y **Music Gen (HeartMuLa)**
 - **Panel de Conexión**: URLs dinámicas de acceso (ComfyUI, Gradio, Jupyter) con botones Copiar/Abrir
 - **Protección de Costes**: Límites de gasto por pod (auto-kill) y presupuesto global
 - **Endpoints Serverless**: Despliegue sin servidor con escalado automático
 - **Sistema de Cola**: Deduplicación, rate limiting, reintentos con backoff exponencial
 - **Auto-Shutdown**: Apagado automático de recursos inactivos
-- **Benchmarks**: Comparativa de GPUs y filtrado por VRAM (16GB+ para música)
 - **Interfaz Moderna**: Dark mode, glassmorphism, animaciones de estado, actualizaciones en tiempo real
-- **Ayuda Integrada**: Guías paso a paso y glosario en la app
+
+### 🆕 Fusión con Proyecto Compañeros (v4.0)
+- **Motor de Workflows Dinámico**: Carga y ejecuta cualquier workflow ComfyUI desde archivos JSON
+- **Generación de Vídeo**: AnimateDiff (GIFs animados) y AnimateDiff + ControlNet Pose
+- **Procesamiento Batch**: Genera múltiples imágenes/vídeos desde una lista de prompts con progreso en tiempo real
+- **Selector de Workflow**: Elige entre SDXL, Lumina2, AnimateDiff o Pose en la interfaz
+- **Galería Multimedia**: Visualización combinada de imágenes y vídeos/GIFs generados
+- **Subida de Workflows Custom**: Sube tus propios workflows ComfyUI vía API
 
 ## 📋 Requisitos
 
@@ -111,11 +120,17 @@ runpod-gpu-orchestrator/
 │   ├── serverless-client.js # Cliente REST para serverless
 │   ├── queue-manager.js   # Gestor de cola de trabajos
 │   ├── cost-tracker.js    # Seguimiento de costes
-│   └── auto-shutdown.js   # Apagado automático
+│   ├── auto-shutdown.js   # Apagado automático
+│   └── workflow-engine.js # 🆕 Motor de workflows dinámico
+├── workflows/             # 🆕 Workflows ComfyUI (JSON)
+│   ├── image_lumina2.json
+│   ├── video_animatediff.json
+│   └── video_pose_controlnet.json
 ├── db/
 │   └── database.js        # SQLite para persistencia
 ├── utils/
 │   └── sanitizer.js       # Sanitización de inputs
+├── proyecto_companeros/   # Proyecto original de compañeros (referencia)
 └── public/
     ├── index.html         # Interfaz web
     ├── css/styles.css     # Estilos
@@ -137,8 +152,12 @@ runpod-gpu-orchestrator/
 | GET | `/api/pods` | Lista de pods |
 | POST | `/api/pods` | Crear nuevo pod |
 | POST | `/api/pods/:id/stop` | Detener pod |
+| POST | `/api/pods/:id/generate` | Generar imagen/vídeo en un pod |
+| POST | `/api/pods/:id/batch` | 🆕 Procesamiento batch de prompts |
 | DELETE | `/api/pods/:id` | Eliminar pod |
 | GET | `/api/endpoints` | Lista de endpoints |
+| GET | `/api/workflows` | 🆕 Lista de workflows disponibles |
+| POST | `/api/workflows/upload` | 🆕 Subir workflow custom |
 | POST | `/api/jobs` | Enviar trabajo |
 | GET | `/api/jobs` | Lista de trabajos |
 | GET | `/api/costs` | Resumen de costes |
@@ -159,3 +178,4 @@ MIT License - ver [LICENSE](LICENSE) para más detalles.
 
 - [RunPod](https://runpod.io/) por su excelente API
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) por el frontend de Stable Diffusion
+- **Proyecto Zaragoza Maker** (compañeros de clase) — Scripts Python de generación de imágenes/vídeo con ComfyUI y Automatic1111 que se han integrado en este orquestador
