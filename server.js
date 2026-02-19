@@ -111,7 +111,8 @@ app.post('/api/pods', asyncHandler(async (req, res) => {
         gpuTypeId: input.gpuTypeId,
         volumeInGb: input.volumeInGb || 0,
         containerDiskInGb: input.containerDiskInGb || null,
-        cloudType: input.cloudType || 'ALL'
+        cloudType: input.cloudType || 'ALL',
+        env: []
     };
 
     // Use templateId if provided (for Music Gen), otherwise use imageName
@@ -121,11 +122,17 @@ app.post('/api/pods', asyncHandler(async (req, res) => {
         podOptions.imageName = input.imageName;
     }
 
-    // Set ports based on task type
+    // Set ports and env based on task type
     if (input.taskType === 'musicGen') {
         podOptions.ports = '7860/http,22/tcp';
+    } else if (input.taskType === 'imageGenA1111') {
+        // Automatic1111 WebUI — uses port 3000, proven approach from companion project
+        podOptions.ports = '3000/http,8888/http,22/tcp';
+        podOptions.env.push({ key: 'COMMANDLINE_ARGS', value: '--api --listen 0.0.0.0 --port 3000 --xformers --no-half-vae' });
     } else {
+        // ComfyUI (default imageGen)
         podOptions.ports = '8188/http,8888/http,3000/http,22/tcp';
+        podOptions.env.push({ key: 'CLI_ARGS', value: '--listen 0.0.0.0 --port 8188' });
     }
 
     const pod = await runpodClient.createPod(podOptions);
@@ -186,36 +193,130 @@ app.post('/api/workflows/upload', asyncHandler(async (req, res) => {
 
 // ==================== Image/Video Generation (via Pod) ====================
 
-// Helper: resolve ComfyUI URL from a pod
-async function resolveComfyUrl(podId) {
+// Helper: determine which engine a pod is running (a1111 or comfyui)
+function getPodEngine(podId) {
+    const trackedPods = database.getTrackedPods();
+    const trackedPod = trackedPods.find(p => p.id === podId);
+    if (trackedPod?.taskType === 'imageGenA1111') return 'a1111';
+    if (trackedPod?.taskType === 'musicGen') return 'musicGen';
+    return 'comfyui';
+}
+
+// Helper: resolve the base URL for a pod's generation service (FAST — no health check)
+async function resolvePodUrl(podId) {
     const pod = await runpodClient.getPod(podId);
     if (!pod) throw { status: 404, message: 'Pod not found' };
     if (pod.desiredStatus !== 'RUNNING') throw { status: 400, message: 'Pod is not running' };
 
-    let comfyUrl = null;
-    if (pod.runtime && pod.runtime.ports) {
-        const httpPort = pod.runtime.ports.find(p => p.privatePort === 8188 || p.privatePort === 3000);
-        if (httpPort && httpPort.ip) {
-            comfyUrl = `http://${httpPort.ip}:${httpPort.publicPort}`;
+    if (!pod.runtime || (!pod.runtime.ports && pod.runtime.uptimeInSeconds === 0)) {
+        throw {
+            status: 400,
+            message: 'Pod is still initializing. The GPU is being assigned and the container is starting. This typically takes 2-5 minutes. Please wait and try again.'
+        };
+    }
+
+    const engine = getPodEngine(podId);
+    const portMap = { a1111: 3000, comfyui: 8188, musicGen: 7860 };
+    const targetPort = portMap[engine] || 8188;
+
+    // Always use RunPod proxy URL (direct IPs are internal and unreachable from local)
+    const serviceUrl = `https://${podId}-${targetPort}.proxy.runpod.net`;
+
+    console.log(`[${engine}] URL for pod ${podId}: ${serviceUrl}`);
+    return { pod, serviceUrl, engine };
+}
+
+// Helper: query available checkpoints from ComfyUI
+async function getAvailableCheckpoints(comfyUrl) {
+    try {
+        const response = await fetch(`${comfyUrl}/object_info/CheckpointLoaderSimple`, {
+            signal: AbortSignal.timeout(10000)
+        });
+        if (response.ok) {
+            const data = await response.json();
+            const ckpts = data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] || [];
+            console.log(`Available checkpoints on pod: ${JSON.stringify(ckpts)}`);
+            return ckpts;
+        }
+    } catch (e) {
+        console.warn('Could not query checkpoints:', e.message);
+    }
+    return [];
+}
+
+// Helper: fix checkpoint name in a workflow to match what's installed
+function fixCheckpointInWorkflow(workflow, availableCheckpoints) {
+    if (!availableCheckpoints || availableCheckpoints.length === 0) return workflow;
+
+    for (const [nodeId, node] of Object.entries(workflow)) {
+        if (node.class_type === 'CheckpointLoaderSimple') {
+            const requestedCkpt = node.inputs?.ckpt_name;
+            if (requestedCkpt && !availableCheckpoints.includes(requestedCkpt)) {
+                // Try exact substring match first (e.g. 'turbo', 'sdxl', etc.)
+                const keywords = requestedCkpt.toLowerCase().replace(/[._-]/g, ' ').split(' ').filter(w => w.length > 3);
+                let bestMatch = availableCheckpoints.find(c => keywords.some(k => c.toLowerCase().includes(k)));
+
+                // Fallback: try common model type keywords
+                if (!bestMatch) {
+                    bestMatch = availableCheckpoints.find(c =>
+                        c.toLowerCase().includes('turbo') ||
+                        c.toLowerCase().includes('sdxl') ||
+                        c.toLowerCase().includes('sd_xl') ||
+                        c.toLowerCase().includes('stable')
+                    );
+                }
+
+                const fallback = bestMatch || availableCheckpoints[0];
+                console.log(`Checkpoint fix: "${requestedCkpt}" → "${fallback}" (available: ${availableCheckpoints.join(', ')})`);
+                node.inputs.ckpt_name = fallback;
+            }
         }
     }
-    if (!comfyUrl) {
-        throw { status: 400, message: 'ComfyUI endpoint not found. Pod may still be starting up.' };
-    }
-    return { pod, comfyUrl };
+    return workflow;
 }
 
 // Helper: send a workflow to ComfyUI and poll for results
 async function executeWorkflowOnPod(comfyUrl, workflow, timeoutMs = 180000) {
-    const queueResponse = await fetch(`${comfyUrl}/prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: workflow })
-    });
+    console.log(`Sending workflow to ComfyUI at: ${comfyUrl}/prompt`);
+    console.log(`Workflow nodes: ${Object.keys(workflow).length}, classes: ${[...new Set(Object.values(workflow).map(n => n.class_type))].join(', ')}`);
+
+    let queueResponse;
+    try {
+        queueResponse = await fetch(`${comfyUrl}/prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: workflow }),
+            signal: AbortSignal.timeout(30000)
+        });
+    } catch (fetchErr) {
+        console.error(`[ComfyUI] Connection failed to ${comfyUrl}:`, fetchErr.message);
+        throw new Error(
+            `No se pudo conectar a ComfyUI en ${comfyUrl}. ` +
+            `Esto puede pasar porque: (1) ComfyUI aún no ha terminado de cargar — espera 2-3 minutos, ` +
+            `(2) El servicio no está corriendo en el pod — revisa los logs en RunPod. ` +
+            `Error: ${fetchErr.message}`
+        );
+    }
 
     if (!queueResponse.ok) {
-        const errText = await queueResponse.text().catch(() => '');
-        throw new Error(`Failed to queue prompt in ComfyUI: ${errText}`);
+        let errDetail = '';
+        try {
+            const errJson = await queueResponse.json();
+            console.error('ComfyUI error response:', JSON.stringify(errJson, null, 2));
+            // ComfyUI returns structured errors with node_errors
+            if (errJson.error) {
+                errDetail = errJson.error.message || JSON.stringify(errJson.error);
+            }
+            if (errJson.node_errors) {
+                const nodeErrs = Object.values(errJson.node_errors)
+                    .map(ne => ne.errors?.map(e => e.message).join(', ') || JSON.stringify(ne))
+                    .join('; ');
+                errDetail += (errDetail ? ' | ' : '') + 'Node errors: ' + nodeErrs;
+            }
+        } catch {
+            errDetail = await queueResponse.text().catch(() => `HTTP ${queueResponse.status}`);
+        }
+        throw new Error(`ComfyUI rejected the workflow: ${errDetail || 'Unknown error (HTTP ' + queueResponse.status + ')'}`);
     }
 
     const queueResult = await queueResponse.json();
@@ -260,20 +361,134 @@ async function executeWorkflowOnPod(comfyUrl, workflow, timeoutMs = 180000) {
     return { completed, promptId, results };
 }
 
-// Original generate endpoint (backwards compatible)
+// ---- Automatic1111 generation helper ----
+async function generateViaA1111(serviceUrl, params) {
+    const payload = {
+        prompt: params.prompt || '',
+        negative_prompt: params.negative_prompt || '',
+        width: params.width || 512,
+        height: params.height || 512,
+        steps: params.steps || 20,
+        cfg_scale: params.cfg_scale || 7,
+        sampler_name: params.sampler || 'DPM++ 2M',
+        seed: params.seed || -1,
+        batch_size: params.batch_size || 1,
+        save_images: true
+    };
+
+    console.log(`[A1111] Sending txt2img to ${serviceUrl}/sdapi/v1/txt2img`);
+    console.log(`[A1111] Payload: prompt="${payload.prompt.substring(0, 80)}" ${payload.width}x${payload.height} steps=${payload.steps}`);
+
+    const response = await fetch(`${serviceUrl}/sdapi/v1/txt2img`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(180000) // 3 min timeout
+    });
+
+    if (!response.ok) {
+        let errDetail = `HTTP ${response.status}`;
+        try { errDetail = (await response.json()).detail || errDetail; } catch { }
+        throw new Error(`Automatic1111 rejected the request: ${errDetail}`);
+    }
+
+    const result = await response.json();
+
+    if (!result.images || result.images.length === 0) {
+        throw new Error('Automatic1111 returned no images');
+    }
+
+    // Convert base64 images to data URIs the frontend can display directly
+    const images = result.images.map((b64, i) => ({
+        url: `data:image/png;base64,${b64}`,
+        filename: `a1111_${Date.now()}_${i}.png`
+    }));
+
+    console.log(`[A1111] Generated ${images.length} image(s) successfully`);
+    return { status: 'completed', images, gifs: [] };
+}
+
+// Smart generate endpoint — auto-detects engine (A1111 or ComfyUI)
 app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
     const podId = req.params.id;
     const params = req.body;
 
     try {
-        const { comfyUrl } = await resolveComfyUrl(podId);
-        const workflowId = params.workflowId || 'image_sdxl_default';
-        const workflow = workflowEngine.buildPrompt(workflowId, params);
-        const isVideo = workflowEngine.getWorkflow(workflowId)?.category === 'video' ||
-            workflowEngine.getWorkflow(workflowId)?.hasVideo;
+        const { serviceUrl, engine } = await resolvePodUrl(podId);
+
+        // ---- Automatic1111 path (proven approach from companion project) ----
+        if (engine === 'a1111') {
+            const result = await generateViaA1111(serviceUrl, params);
+            database.updatePodActivity(podId);
+            return res.json(result);
+        }
+
+        // ---- ComfyUI path (original workflow-based approach) ----
+        let workflow;
+        let isVideo = false;
+
+        if (params.rawWorkflow && typeof params.rawWorkflow === 'object') {
+            // User uploaded a workflow_api.json directly — use it as-is
+            workflow = JSON.parse(JSON.stringify(params.rawWorkflow));
+            // Detect if video by checking node types
+            const classTypes = Object.values(workflow).map(n => n.class_type || '');
+            isVideo = classTypes.some(c => c.includes('AnimateDiff') || c === 'VHS_VideoCombine');
+            console.log(`[ComfyUI] Using user-uploaded raw workflow (${Object.keys(workflow).length} nodes, video=${isVideo})`);
+
+            // Inject prompt into CLIP text encode nodes if user provided one
+            if (params.prompt) {
+                for (const [nodeId, node] of Object.entries(workflow)) {
+                    if (node.class_type === 'CLIPTextEncode' || node.class_type === 'CLIPTextEncodeLumina2') {
+                        const title = (node._meta?.title || '').toLowerCase();
+                        if (!title.includes('negativ')) {
+                            const field = node.class_type === 'CLIPTextEncodeLumina2' ? 'user_prompt' : 'text';
+                            if (node.inputs && (node.inputs[field] === '' || node.inputs[field])) {
+                                node.inputs[field] = params.prompt;
+                                console.log(`[ComfyUI] Injected prompt into node ${nodeId} (${node.class_type})`);
+                            }
+                        } else if (params.negative_prompt) {
+                            const field = node.class_type === 'CLIPTextEncodeLumina2' ? 'user_prompt' : 'text';
+                            node.inputs[field] = params.negative_prompt;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Use built-in workflow template
+            const workflowId = params.workflowId || 'image_sdxl_default';
+            workflow = workflowEngine.buildPrompt(workflowId, params);
+            isVideo = workflowEngine.getWorkflow(workflowId)?.category === 'video' ||
+                workflowEngine.getWorkflow(workflowId)?.hasVideo;
+        }
+
+        // Always try to get checkpoints and auto-fix names (handles 'Value not in list' errors)
+        const checkpoints = await getAvailableCheckpoints(serviceUrl);
+        console.log(`[ComfyUI] Available checkpoints: ${checkpoints.length > 0 ? checkpoints.join(', ') : 'none detected'}`);
+
+        if (!params.rawWorkflow) {
+            // Built-in template: block if no models at all
+            if (checkpoints.length === 0) {
+                const comfyUiUrl = `https://${podId}-8188.proxy.runpod.net`;
+                return res.status(400).json({
+                    error: 'NO_CHECKPOINTS',
+                    message: `⚠️ ComfyUI no tiene ningún modelo descargado todavía. Para generar imágenes necesitas:\n\n` +
+                        `1️⃣ Abre ComfyUI directamente: ${comfyUiUrl}\n` +
+                        `2️⃣ Usa el Manager para descargar un modelo (ej: SDXL, Stable Diffusion 1.5)\n` +
+                        `3️⃣ Configura un workflow en ComfyUI y verifica que funciona\n` +
+                        `4️⃣ Vuelve aquí y genera desde la app\n\n` +
+                        `💡 TIP: Si prefieres generar sin configuración, crea un pod tipo "Image Gen (A1111)" que viene con modelos preinstalados.`,
+                    comfyUiUrl
+                });
+            }
+        }
+
+        // Fix checkpoint names in workflow regardless of source (avoids 'Value not in list')
+        if (checkpoints.length > 0) {
+            workflow = fixCheckpointInWorkflow(workflow, checkpoints);
+        }
 
         const { completed, promptId, results } = await executeWorkflowOnPod(
-            comfyUrl, workflow, isVideo ? 300000 : 120000
+            serviceUrl, workflow, isVideo ? 300000 : 120000
         );
 
         if (!completed) {
@@ -290,8 +505,7 @@ app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
             status: 'completed',
             images: results.images,
             gifs: results.gifs,
-            promptId,
-            workflowId
+            promptId
         });
     } catch (error) {
         if (error.status) {
@@ -299,6 +513,45 @@ app.post('/api/pods/:id/generate', asyncHandler(async (req, res) => {
         }
         console.error('Generation error:', error);
         res.status(500).json({ error: error.message });
+    }
+}));
+
+// Check if a pod's generation service is ready and has models
+app.get('/api/pods/:id/check-ready', asyncHandler(async (req, res) => {
+    const podId = req.params.id;
+    try {
+        const { serviceUrl, engine } = await resolvePodUrl(podId);
+        const comfyUiUrl = `https://${podId}-8188.proxy.runpod.net`;
+
+        // For ComfyUI, just return ready with the URL — the user tests via workflow upload
+        // Don't try to query checkpoints here (it's slow and unreliable via proxy)
+        if (engine === 'comfyui') {
+            return res.json({ ready: true, engine, comfyUiUrl, serviceUrl });
+        }
+
+        if (engine === 'a1111') {
+            try {
+                const resp = await fetch(`${serviceUrl}/sdapi/v1/sd-models`, {
+                    signal: AbortSignal.timeout(8000)
+                });
+                if (resp.ok) {
+                    const models = await resp.json();
+                    return res.json({ ready: true, engine, models: models.length, serviceUrl });
+                }
+            } catch (e) { /* fall through */ }
+            return res.json({
+                ready: false, engine, models: 0, serviceUrl,
+                message: 'Automatic1111 todavía está cargando. Espera unos minutos.'
+            });
+        }
+
+        // Default: assume ready
+        return res.json({ ready: true, engine, serviceUrl });
+    } catch (error) {
+        res.json({
+            ready: false, engine: 'unknown', models: 0,
+            message: error.message || 'No se pudo conectar al pod.'
+        });
     }
 }));
 
@@ -316,9 +569,48 @@ app.post('/api/pods/:id/batch', asyncHandler(async (req, res) => {
     }
 
     try {
-        const { comfyUrl } = await resolveComfyUrl(podId);
+        const { serviceUrl, engine } = await resolvePodUrl(podId);
+
+        // A1111 batch: just loop generateViaA1111
+        if (engine === 'a1111') {
+            res.json({
+                status: 'batch_started',
+                total: prompts.length,
+                workflowId,
+                message: `Batch of ${prompts.length} prompts queued (A1111). Progress via WebSocket.`
+            });
+
+            const allResults = [];
+            for (let i = 0; i < prompts.length; i++) {
+                const promptText = prompts[i].trim();
+                if (!promptText) continue;
+                queueManager.broadcast('batch:progress', {
+                    podId, current: i + 1, total: prompts.length,
+                    prompt: promptText.substring(0, 80), status: 'generating'
+                });
+                try {
+                    const r = await generateViaA1111(serviceUrl, { ...params, prompt: promptText });
+                    allResults.push({ index: i, prompt: promptText.substring(0, 80), status: 'completed', images: r.images, gifs: [] });
+                } catch (err) {
+                    allResults.push({ index: i, prompt: promptText.substring(0, 80), status: 'error', error: err.message });
+                }
+                database.updatePodActivity(podId);
+            }
+            queueManager.broadcast('batch:complete', {
+                podId, total: prompts.length,
+                completed: allResults.filter(r => r.status === 'completed').length,
+                failed: allResults.filter(r => r.status === 'error').length,
+                results: allResults
+            });
+            return;
+        }
+
+        const comfyUrl = serviceUrl;
         const wf = workflowEngine.getWorkflow(workflowId);
         const isVideo = wf?.category === 'video' || wf?.hasVideo;
+
+        // Auto-detect checkpoints once for the whole batch
+        const checkpoints = await getAvailableCheckpoints(comfyUrl);
 
         // Start batch in the background — send a start response immediately
         res.json({
@@ -344,10 +636,13 @@ app.post('/api/pods/:id/batch', asyncHandler(async (req, res) => {
             });
 
             try {
-                const workflow = workflowEngine.buildPrompt(workflowId, {
+                let workflow = workflowEngine.buildPrompt(workflowId, {
                     ...params,
                     prompt: promptText
                 });
+                if (checkpoints.length > 0) {
+                    workflow = fixCheckpointInWorkflow(workflow, checkpoints);
+                }
                 const { completed, results } = await executeWorkflowOnPod(
                     comfyUrl, workflow, isVideo ? 300000 : 120000
                 );
@@ -417,7 +712,14 @@ app.post('/api/pods/:id/backup', asyncHandler(async (req, res) => {
     const trackedPods = database.getTrackedPods();
     const trackedPod = trackedPods.find(p => p.id === podId);
     const taskType = trackedPod?.taskType || 'imageGen';
-    const outputDir = taskType === 'musicGen' ? '/workspace/output' : '/workspace/ComfyUI/output';
+    let outputDir;
+    if (taskType === 'musicGen') {
+        outputDir = '/workspace/output';
+    } else if (taskType === 'imageGenA1111') {
+        outputDir = '/workspace/stable-diffusion-webui/outputs/txt2img-images';
+    } else {
+        outputDir = '/workspace/ComfyUI/output';
+    }
 
     // Use the proxy URL to access Jupyter file API (port 8888)
     const jupyterUrl = `https://${podId}-8888.proxy.runpod.net`;
@@ -773,11 +1075,11 @@ app.get('/api/templates', asyncHandler(async (req, res) => {
     // Add predefined community templates
     const communityTemplates = [
         {
-            id: 'comfyui-sdxl',
-            name: 'ComfyUI SDXL - All In One',
-            imageName: 'hearmeman/comfyui-sdxl-template:v7',
+            id: 'comfyui-official',
+            name: 'ComfyUI (RunPod Official)',
+            imageName: 'runpod/comfyui:latest',
             isPublic: true,
-            description: 'One Click Install - ComfyUI SDXL with all models'
+            description: 'Official RunPod ComfyUI template - Stable and maintained'
         },
         {
             id: 'automatic1111',

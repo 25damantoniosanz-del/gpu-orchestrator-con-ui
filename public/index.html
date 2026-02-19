@@ -241,6 +241,56 @@
                   XL.</span>
               </div>
 
+              <!-- Upload Custom Workflow -->
+              <div class="workflow-upload-section" id="workflowUploadSection">
+                <div class="workflow-upload-header" onclick="app.toggleWorkflowGuide()">
+                  <span>📁 Usar tu propio Workflow de ComfyUI</span>
+                  <span class="toggle-arrow" id="workflowGuideArrow">▶</span>
+                </div>
+                <div class="workflow-guide" id="workflowGuide" style="display: none;">
+                  <p class="guide-intro">Para usar tu workflow personalizado, primero expórtalo desde ComfyUI:</p>
+                  <div class="setup-steps">
+                    <div class="setup-step">
+                      <span class="step-num">1</span>
+                      <span>Abre <strong>ComfyUI</strong> en el <a href="#" id="comfyuiLinkInGuide" target="_blank"
+                          class="setup-link">🎨 Puerto 8188</a> de tu pod</span>
+                    </div>
+                    <div class="setup-step">
+                      <span class="step-num">2</span>
+                      <span>Configura tu workflow (carga un modelo, ajusta nodos, etc.) y <strong>verifica que
+                          funciona</strong> generando una imagen de prueba</span>
+                    </div>
+                    <div class="setup-step">
+                      <span class="step-num">3</span>
+                      <span>Haz clic en <strong>"Export (API)"</strong> en el menú de ComfyUI para descargar el archivo
+                        <code>workflow_api.json</code></span>
+                    </div>
+                    <div class="setup-step">
+                      <span class="step-num">4</span>
+                      <span>Sube ese archivo aquí abajo 👇</span>
+                    </div>
+                  </div>
+
+                  <div class="workflow-upload-area" id="workflowDropZone">
+                    <input type="file" id="workflowFileInput" accept=".json" onchange="app.handleWorkflowUpload(event)"
+                      style="display:none">
+                    <div class="upload-content" onclick="document.getElementById('workflowFileInput').click()">
+                      <span class="upload-icon">📤</span>
+                      <span class="upload-text">Haz clic o arrastra tu <strong>workflow_api.json</strong> aquí</span>
+                      <span class="upload-hint">Archivo JSON exportado desde ComfyUI con "Export (API)"</span>
+                    </div>
+                  </div>
+
+                  <div id="uploadedWorkflowInfo" class="uploaded-workflow-info" style="display:none;">
+                    <div class="uploaded-wf-header">
+                      <span>✅ <strong id="uploadedWfName">Workflow cargado</strong></span>
+                      <button class="btn sm danger" onclick="app.clearUploadedWorkflow()">❌ Quitar</button>
+                    </div>
+                    <div class="uploaded-wf-details" id="uploadedWfDetails"></div>
+                  </div>
+                </div>
+              </div>
+
               <form onsubmit="app.generateImage(event)">
                 <div class="form-group">
                   <label for="promptInput">Prompt</label>
@@ -394,10 +444,15 @@
           <div class="card">
             <h3 class="card-title">🚀 ¿Qué quieres crear?</h3>
             <div class="easy-tool-selector">
-              <div class="easy-tool-card selected" id="easyToolImages" onclick="app.selectEasyTool('imageGen')">
+              <div class="easy-tool-card selected" id="easyToolA1111" onclick="app.selectEasyTool('imageGenA1111')">
+                <span class="easy-tool-icon">🖼️</span>
+                <span class="easy-tool-name">Imágenes (A1111)</span>
+                <span class="easy-tool-desc">⭐ Recomendado - Método probado</span>
+              </div>
+              <div class="easy-tool-card" id="easyToolImages" onclick="app.selectEasyTool('imageGen')">
                 <span class="easy-tool-icon">🎨</span>
-                <span class="easy-tool-name">Generar Imágenes</span>
-                <span class="easy-tool-desc">Crea arte con IA usando Stable Diffusion</span>
+                <span class="easy-tool-name">Imágenes (ComfyUI)</span>
+                <span class="easy-tool-desc">Workflows avanzados</span>
               </div>
               <div class="easy-tool-card" id="easyToolMusic" onclick="app.selectEasyTool('musicGen')">
                 <span class="easy-tool-icon">🎵</span>
@@ -774,6 +829,7 @@
                 <div class="faq-question">¿Qué puerto uso para cada tipo de pod?</div>
                 <div class="faq-answer">
                   <ul>
+                    <li><strong>Image Gen (A1111):</strong> Puerto 3000 ⭐ Recomendado</li>
                     <li><strong>Image Gen (ComfyUI):</strong> Puerto 8188</li>
                     <li><strong>Music Gen (HeartMuLa):</strong> Puerto 7860</li>
                   </ul>

@@ -13,10 +13,11 @@ class GPUOrchestrator {
     this.benchmarks = [];
     this.activity = [];
     this.uiMode = localStorage.getItem('gpuOrchUIMode') || 'easy';
-    this.easySelectedTool = 'imageGen';
+    this.easySelectedTool = 'imageGenA1111';
     this.workflows = [];
     this.selectedWorkflowId = 'image_sdxl_default';
     this.generatedVideos = [];
+    this.uploadedRawWorkflow = null; // User-uploaded workflow_api.json
 
     this.init();
   }
@@ -63,6 +64,7 @@ class GPUOrchestrator {
   selectEasyTool(tool) {
     this.easySelectedTool = tool;
     document.getElementById('easyToolImages')?.classList.toggle('selected', tool === 'imageGen');
+    document.getElementById('easyToolA1111')?.classList.toggle('selected', tool === 'imageGenA1111');
     document.getElementById('easyToolMusic')?.classList.toggle('selected', tool === 'musicGen');
   }
 
@@ -98,8 +100,10 @@ class GPUOrchestrator {
       }
 
       const bestGpu = candidates[0];
-      const toolName = this.easySelectedTool === 'imageGen' ? 'Imágenes' : 'Música';
-      const podName = `easy-${this.easySelectedTool === 'imageGen' ? 'img' : 'music'}-${Date.now().toString(36)}`;
+      const toolNames = { imageGenA1111: 'Imágenes (A1111)', imageGen: 'Imágenes (ComfyUI)', musicGen: 'Música' };
+      const toolName = toolNames[this.easySelectedTool] || 'IA';
+      const podSuffix = { imageGenA1111: 'a1111', imageGen: 'comfy', musicGen: 'music' };
+      const podName = `easy-${podSuffix[this.easySelectedTool] || 'pod'}-${Date.now().toString(36)}`;
 
       const data = {
         name: podName,
@@ -207,6 +211,12 @@ class GPUOrchestrator {
         break;
       case 'pod:auto-stop-failed':
       case 'pod:terminate-failed':
+        // Ignore errors about pods that no longer exist (stale tracking entries)
+        if (eventData.error && (eventData.error.includes('does not exist') || eventData.error.includes('not found'))) {
+          console.log('Ignoring stale pod error:', eventData.error);
+          this.loadPods(); // Refresh pod list
+          break;
+        }
         this.showToast('Error', `No se pudo detener el pod: ${eventData.error}`, 'error');
         break;
       case 'batch:progress':
@@ -423,8 +433,14 @@ class GPUOrchestrator {
   getPodConnectionUrls(podId) {
     return [
       {
+        icon: '🖼️',
+        label: 'Automatic1111 (Imágenes)',
+        port: 3000,
+        url: `https://${podId}-3000.proxy.runpod.net`
+      },
+      {
         icon: '🎨',
-        label: 'ComfyUI (Imágenes)',
+        label: 'ComfyUI (Workflows)',
         port: 8188,
         url: `https://${podId}-8188.proxy.runpod.net`
       },
@@ -514,17 +530,29 @@ class GPUOrchestrator {
   // ==================== Create Pod Modal ====================
   // Built-in templates configuration
   builtInTemplates = {
+    imageGenA1111: {
+      id: 'image-gen-a1111',
+      name: 'Image Gen (Automatic1111)',
+      templateId: null,
+      imageName: 'runpod/stable-diffusion:web-ui-13.0.0-auto',
+      port: 3000,
+      minVram: 8,
+      icon: '🖼️',
+      description: 'Generación de imágenes con Automatic1111 WebUI (método probado). Recomendado.',
+      defaultVolume: 30,
+      defaultContainerDisk: 20
+    },
     imageGen: {
       id: 'image-gen-comfyui',
-      name: 'Image Gen (ComfyUI SDXL)',
-      templateId: null, // Uses docker image directly
-      imageName: 'hearmeman/comfyui-sdxl-template:v7',
+      name: 'Image Gen (ComfyUI)',
+      templateId: 'cw3nka7d08', // RunPod official ComfyUI template
+      imageName: null,
       port: 8188,
       minVram: 8,
       icon: '🎨',
-      description: 'Stable Diffusion XL con ComfyUI para generación de imágenes',
-      defaultVolume: 20,
-      defaultContainerDisk: 10
+      description: 'Generación de imágenes con ComfyUI y workflows avanzados.',
+      defaultVolume: 30,
+      defaultContainerDisk: 20
     },
     musicGen: {
       id: 'music-gen-heartmula',
@@ -562,11 +590,18 @@ class GPUOrchestrator {
         <div class="form-group">
           <label>Tipo de Tarea *</label>
           <div class="task-type-selector">
-            <div class="task-type-option active" data-type="imageGen" onclick="app.selectTaskType('imageGen')">
+            <div class="task-type-option active" data-type="imageGenA1111" onclick="app.selectTaskType('imageGenA1111')">
+              <div class="task-type-icon">🖼️</div>
+              <div class="task-type-info">
+                <div class="task-type-name">Image Gen (A1111)</div>
+                <div class="task-type-desc">⭐ Recomendado</div>
+              </div>
+            </div>
+            <div class="task-type-option" data-type="imageGen" onclick="app.selectTaskType('imageGen')">
               <div class="task-type-icon">🎨</div>
               <div class="task-type-info">
-                <div class="task-type-name">Image Gen</div>
-                <div class="task-type-desc">ComfyUI SDXL</div>
+                <div class="task-type-name">Image Gen (ComfyUI)</div>
+                <div class="task-type-desc">Workflows avanzados</div>
               </div>
             </div>
             <div class="task-type-option" data-type="musicGen" onclick="app.selectTaskType('musicGen')">
@@ -580,8 +615,8 @@ class GPUOrchestrator {
         </div>
 
         <div id="taskTypeInfo" class="info-box">
-          <strong>🎨 Image Gen:</strong> Generación de imágenes con Stable Diffusion XL y ComfyUI. 
-          Funciona con GPUs de 8GB+.
+          <strong>🖼️ Image Gen (A1111):</strong> Generación de imágenes con Automatic1111 WebUI. 
+          Método probado y fiable. Funciona con GPUs de 8GB+.
         </div>
 
         <div class="form-group">
@@ -644,7 +679,7 @@ class GPUOrchestrator {
     `;
 
     // Set initial task type and populate GPUs
-    this.selectedTaskType = 'imageGen';
+    this.selectedTaskType = 'imageGenA1111';
     this.updateGpuOptionsForTaskType();
     this.updateDiskDefaultsForTaskType();
 
@@ -663,10 +698,16 @@ class GPUOrchestrator {
 
     // Update info box
     const infoBox = document.getElementById('taskTypeInfo');
-    if (type === 'imageGen') {
+    if (type === 'imageGenA1111') {
       infoBox.className = 'info-box';
       infoBox.innerHTML = `
-        <strong>🎨 Image Gen:</strong> Generación de imágenes con Stable Diffusion XL y ComfyUI. 
+        <strong>🖼️ Image Gen (A1111):</strong> Generación de imágenes con Automatic1111 WebUI. 
+        Método probado y fiable. Funciona con GPUs de 8GB+. <strong>⭐ Recomendado</strong>
+      `;
+    } else if (type === 'imageGen') {
+      infoBox.className = 'info-box';
+      infoBox.innerHTML = `
+        <strong>🎨 Image Gen (ComfyUI):</strong> Generación de imágenes con ComfyUI y workflows avanzados.
         Funciona con GPUs de 8GB+.
       `;
     } else {
@@ -1647,7 +1688,7 @@ ${JSON.stringify(job.output, null, 2)}
     }
 
     statusEl.className = 'pod-connection-status connecting';
-    statusEl.innerHTML = '🔄 Connecting to pod...';
+    statusEl.innerHTML = '🔄 Conectando al pod...';
 
     try {
       const pod = await this.api('GET', `/pods/${podId}`);
@@ -1660,8 +1701,72 @@ ${JSON.stringify(job.output, null, 2)}
         }
       }
 
+      // Check if the pod's service is ready and has models
+      let readyInfo = null;
+      try {
+        readyInfo = await this.api('GET', `/pods/${podId}/check-ready`);
+      } catch (e) {
+        // check-ready failed, proceed anyway
+      }
+
+      if (readyInfo && !readyInfo.ready) {
+        // Pod is not ready — show setup guide
+        const engine = readyInfo.engine || 'comfyui';
+
+        if (engine === 'comfyui') {
+          const comfyUrl = readyInfo.comfyUiUrl || `https://${podId}-8188.proxy.runpod.net`;
+          statusEl.className = 'pod-connection-status warning';
+          statusEl.innerHTML = `
+            <div class="pod-setup-guide">
+              <h4>⚠️ ComfyUI necesita configuración</h4>
+              <p>El pod está funcionando, pero ComfyUI no tiene modelos descargados. Sigue estos pasos:</p>
+              <div class="setup-steps">
+                <div class="setup-step">
+                  <span class="step-num">1</span>
+                  <span>Abre ComfyUI directamente: <a href="${comfyUrl}" target="_blank" class="setup-link">🎨 Abrir ComfyUI (Puerto 8188)</a></span>
+                </div>
+                <div class="setup-step">
+                  <span class="step-num">2</span>
+                  <span>Usa el <strong>ComfyUI Manager</strong> para descargar un modelo (ej: SDXL, SD 1.5)</span>
+                </div>
+                <div class="setup-step">
+                  <span class="step-num">3</span>
+                  <span>Configura un workflow en ComfyUI y verifica que genera imágenes</span>
+                </div>
+                <div class="setup-step">
+                  <span class="step-num">4</span>
+                  <span>Vuelve aquí y haz clic en <strong>"🔄 Refresh"</strong> para comprobar de nuevo</span>
+                </div>
+              </div>
+              <div class="setup-tip">
+                <strong>💡 ¿Más fácil?</strong> Crea un pod con <strong>"Image Gen (A1111) ⭐"</strong> que viene con modelos preinstalados y funciona directamente.
+              </div>
+            </div>
+          `;
+          // Still show the interface — user can retry after setup
+          interfaceEl.style.display = 'grid';
+          noSourceEl.style.display = 'none';
+        } else {
+          // A1111 loading
+          statusEl.className = 'pod-connection-status connecting';
+          statusEl.innerHTML = `
+            <div class="pod-setup-guide">
+              <h4>⏳ Automatic1111 está cargando...</h4>
+              <p>${readyInfo.message || 'El servicio todavía está inicializando. Espera 2-5 minutos mientras se descargan los modelos.'}</p>
+              <p><strong>💡 Consejo:</strong> Espera a que el pod esté completamente listo. Puedes ver los logs en RunPod para comprobar el progreso.</p>
+            </div>
+          `;
+          interfaceEl.style.display = 'grid';
+          noSourceEl.style.display = 'none';
+        }
+        return;
+      }
+
+      // Pod is ready!
+      const engineLabel = readyInfo?.engine === 'a1111' ? 'Automatic1111' : 'ComfyUI';
+      const modelsInfo = readyInfo ? ` — ${readyInfo.models} modelo(s) disponible(s)` : '';
       statusEl.className = 'pod-connection-status connected';
-      statusEl.innerHTML = `✅ Connected to <strong>${this.escapeHtml(pod.name)}</strong> (${pod.machine?.gpuDisplayName || 'GPU'})`;
+      statusEl.innerHTML = `✅ Conectado a <strong>${this.escapeHtml(pod.name)}</strong> (${pod.machine?.gpuDisplayName || 'GPU'}) — Motor: ${engineLabel}${modelsInfo}`;
 
       interfaceEl.style.display = 'grid';
       noSourceEl.style.display = 'none';
@@ -1672,6 +1777,85 @@ ${JSON.stringify(job.output, null, 2)}
       interfaceEl.style.display = 'none';
       noSourceEl.style.display = 'flex';
     }
+  }
+
+  // ==================== Workflow Upload ====================
+  toggleWorkflowGuide() {
+    const guide = document.getElementById('workflowGuide');
+    const arrow = document.getElementById('workflowGuideArrow');
+    if (guide.style.display === 'none') {
+      guide.style.display = 'block';
+      arrow.textContent = '▼';
+      // Update the ComfyUI link based on selected pod
+      if (this.selectedPod) {
+        const link = document.getElementById('comfyuiLinkInGuide');
+        link.href = `https://${this.selectedPod.id}-8188.proxy.runpod.net`;
+      }
+    } else {
+      guide.style.display = 'none';
+      arrow.textContent = '▶';
+    }
+  }
+
+  handleWorkflowUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (!file.name.endsWith('.json')) {
+      this.showToast('Archivo inválido', 'Por favor sube un archivo .json', 'error');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const workflow = JSON.parse(e.target.result);
+
+        // Validate it looks like a ComfyUI API workflow
+        const nodes = Object.values(workflow);
+        if (nodes.length === 0 || !nodes[0].class_type) {
+          this.showToast('Formato inválido', 'Este archivo no parece un workflow_api.json de ComfyUI. Asegúrate de usar "Export (API)" y no "Export" normal.', 'error');
+          return;
+        }
+
+        // Analyze the workflow
+        const classTypes = nodes.map(n => n.class_type);
+        const checkpointNode = nodes.find(n => n.class_type === 'CheckpointLoaderSimple');
+        const ckptName = checkpointNode?.inputs?.ckpt_name || 'desconocido';
+        const kSampler = nodes.find(n => n.class_type === 'KSampler');
+        const latentNode = nodes.find(n => n.class_type === 'EmptyLatentImage');
+        const resolution = latentNode ? `${latentNode.inputs.width}x${latentNode.inputs.height}` : '?';
+        const steps = kSampler?.inputs?.steps || '?';
+        const sampler = kSampler?.inputs?.sampler_name || '?';
+
+        this.uploadedRawWorkflow = workflow;
+
+        // Show success
+        document.getElementById('uploadedWorkflowInfo').style.display = 'block';
+        document.getElementById('uploadedWfName').textContent = file.name;
+        document.getElementById('uploadedWfDetails').innerHTML = `
+          <span>📐 ${resolution}</span>
+          <span>🔧 ${nodes.length} nodos</span>
+          <span>🧠 ${ckptName}</span>
+          <span>⚡ ${steps} steps, ${sampler}</span>
+        `;
+        document.getElementById('workflowDropZone').style.display = 'none';
+
+        this.showToast('Workflow cargado', `${file.name} — ${nodes.length} nodos, modelo: ${ckptName}`, 'success');
+        console.log('[Upload] Workflow loaded:', { nodes: nodes.length, checkpoint: ckptName, resolution });
+      } catch (err) {
+        this.showToast('Error parsing JSON', err.message, 'error');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  clearUploadedWorkflow() {
+    this.uploadedRawWorkflow = null;
+    document.getElementById('uploadedWorkflowInfo').style.display = 'none';
+    document.getElementById('workflowDropZone').style.display = 'block';
+    document.getElementById('workflowFileInput').value = '';
+    this.showToast('Workflow eliminado', 'Se usará el workflow por defecto', 'info');
   }
 
   async generateImage(event) {
@@ -1706,6 +1890,12 @@ ${JSON.stringify(job.output, null, 2)}
       batch_size: parseInt(document.getElementById('genBatch').value),
       workflowId: this.selectedWorkflowId
     };
+
+    // If user uploaded a raw workflow, include it
+    if (this.uploadedRawWorkflow) {
+      params.rawWorkflow = this.uploadedRawWorkflow;
+      console.log('[Upload] Using user-uploaded raw workflow for generation');
+    }
 
     // Add video-specific params
     if (isVideo) {

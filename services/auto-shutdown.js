@@ -170,8 +170,16 @@ class AutoShutdown {
             return log;
 
         } catch (error) {
+            // If pod no longer exists, just clean up tracking
+            if (error.message && (
+                error.message.includes('does not exist') ||
+                error.message.includes('not found')
+            )) {
+                console.log(`Pod ${pod.id} no longer exists in RunPod. Removing from tracking.`);
+                database.removePod(pod.id);
+                return null;
+            }
             console.error(`Failed to terminate pod ${pod.id}:`, error.message);
-            this.broadcast('pod:terminate-failed', { podId: pod.id, error: error.message });
         }
     }
 
@@ -209,8 +217,18 @@ class AutoShutdown {
             return log;
 
         } catch (error) {
+            // If pod no longer exists in RunPod, silently remove it from tracking
+            if (error.message && (
+                error.message.includes('does not exist') ||
+                error.message.includes('not found') ||
+                error.message.includes('no longer exists')
+            )) {
+                console.log(`Pod ${pod.id} no longer exists in RunPod. Removing from tracking.`);
+                database.removePod(pod.id);
+                return null;
+            }
             console.error(`Failed to auto-stop pod ${pod.id}:`, error.message);
-            this.broadcast('pod:auto-stop-failed', { podId: pod.id, error: error.message });
+            // Don't broadcast errors for stale pods to avoid confusing the user
         }
     }
 
